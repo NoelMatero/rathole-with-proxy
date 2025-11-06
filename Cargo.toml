@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "relay",
+    "client",
+    "shared", "auth",
+]
+resolver = "3"

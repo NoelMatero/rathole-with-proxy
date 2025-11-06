@@ -1,0 +1,24 @@
+[package]
+name = "relay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.6", features = ["ws"] }
+hyper = { version = "0.14", features = ["full"] }
+hyper-reverse-proxy = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+hyper-trust-dns = { version = "0.5.0", features = [
+  "rustls-http2",
+  "dnssec-ring",
+  "dns-over-https-rustls",
+  "rustls-webpki",
+  "https-only"
+] }
+futures-util = "0.3"
+lazy_static = "1.4"
+serde_json = "1.0"
+shared = { path = "../shared" }
+uuid = { version = "1.4", features = ["v4"] }
