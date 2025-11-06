@@ -7,11 +7,8 @@ use axum::{
     routing::get,
     Router,
 };
-use futures_util::{stream::StreamExt, SinkExt};
+use futures_util::stream::StreamExt;
 use hyper::{Request as HyperRequest, Response as HyperResponse, StatusCode};
-use hyper_reverse_proxy::ReverseProxy;
-use hyper_trust_dns::{RustlsHttpsConnector, TrustDnsResolver};
-use lazy_static::lazy_static;
 use shared::ControlMessage;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -20,18 +17,10 @@ use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use uuid::Uuid;
 
-lazy_static! {
-    static ref PROXY_CLIENT: ReverseProxy<RustlsHttpsConnector> = {
-        ReverseProxy::new(
-            hyper::Client::builder().build::<_, hyper::Body>(TrustDnsResolver::default().into_rustls_webpki_https_connector()),
-        )
-    };
-}
-
 #[derive(Default, Clone)]
 struct TunnelRegistry {
     tunnels: Arc<Mutex<std::collections::HashMap<String, mpsc::Sender<ControlMessage>>>>,
-    pending_requests: Arc<Mutex<std::collections::HashMap<String, mpsc::Sender<HyperResponse<hyper::Body>>>>>,
+    pending_requests: Arc<Mutex<std::collections::HashMap<String, mpsc::Sender<Result<HyperResponse<hyper::Body>, StatusCode>>>>>,
 }
 
 #[tokio::main]
@@ -87,7 +76,7 @@ async fn handle_socket(id: String, mut socket: WebSocket, registry: TunnelRegist
                                 for (key, value) in headers {
                                     builder = builder.header(key, value);
                                 }
-                                if sender.send(builder.body(body.into()).unwrap()).is_err() {
+                                if sender.send(Ok(builder.body(body.into()).unwrap())).await.is_err() {
                                     tracing::error!("Failed to send response to pending request {}", request_id);
                                 }
                             }
@@ -110,12 +99,17 @@ async fn proxy_handler(
     let client_ip = IpAddr::from([127, 0, 0, 1]);
     let backend_url = "http://httpbin.org";
 
-    if let Some(host) = req.headers().get("host").and_then(|h| h.to_str().ok()) {
+    let host = req.headers().get("host").and_then(|h| h.to_str().ok()).map(|s| s.to_string());
+
+    if let Some(host) = host {
         let host_parts: Vec<&str> = host.split('.').collect();
         if !host_parts.is_empty() {
             let subdomain = host_parts[0];
             if let Some(tunnel_sender) = registry.tunnels.lock().await.get(subdomain).cloned() {
-                return forward_to_tunnel(req, tunnel_sender, registry, subdomain).await;
+                match forward_to_tunnel(req, tunnel_sender, &registry, subdomain).await {
+                    Ok(response) => return Ok(response),
+                    Err(req) => return forward_to_fallback(client_ip, backend_url, req).await,
+                }
             }
         }
     }
@@ -126,16 +120,19 @@ async fn proxy_handler(
 async fn forward_to_tunnel(
     req: HyperRequest<hyper::Body>,
     tunnel_sender: mpsc::Sender<ControlMessage>,
-    registry: TunnelRegistry,
+    registry: &TunnelRegistry,
     subdomain: &str,
-) -> Result<HyperResponse<hyper::Body>, StatusCode> {
+) -> Result<HyperResponse<hyper::Body>, HyperRequest<hyper::Body>> {
     info!("Tunnel found for subdomain: {}. Forwarding via WebSocket.", subdomain);
     let (response_tx, mut response_rx) = mpsc::channel(1);
     let request_id = Uuid::new_v4().to_string();
     registry.pending_requests.lock().await.insert(request_id.clone(), response_tx);
 
     let (parts, body) = req.into_parts();
-    let body_bytes = hyper::body::to_bytes(body).await.unwrap().to_vec();
+    let body_bytes = match hyper::body::to_bytes(body).await {
+        Ok(bytes) => bytes.to_vec(),
+        Err(_) => return Err(HyperRequest::from_parts(parts, hyper::Body::empty())),
+    };
 
     let control_message = ControlMessage::Request {
         request_id: request_id.clone(),
@@ -148,15 +145,24 @@ async fn forward_to_tunnel(
     if tunnel_sender.send(control_message).await.is_err() {
         tracing::error!("Failed to send request to tunnel {}. Falling back to HTTP.", subdomain);
         registry.pending_requests.lock().await.remove(&request_id);
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        let req = HyperRequest::from_parts(parts, hyper::Body::empty());
+        return Err(req);
     }
 
-    if let Some(response) = response_rx.recv().await {
-        Ok(response)
+    if let Some(response_result) = response_rx.recv().await {
+        match response_result {
+            Ok(response) => Ok(response),
+            Err(status_code) => {
+                let mut res = HyperResponse::new(hyper::Body::empty());
+                *res.status_mut() = status_code;
+                Ok(res)
+            }
+        }
     } else {
-        tracing::error!("Did not receive response from tunnel {}. Falling back to HTTP.", subdomain);
+        tracing::error!("Did not receive response from tunnel {}.", subdomain);
         registry.pending_requests.lock().await.remove(&request_id);
-        Err(StatusCode::INTERNAL_SERVER_ERROR)
+        let req = HyperRequest::from_parts(parts, hyper::Body::empty());
+        Err(req)
     }
 }
 
@@ -166,7 +172,7 @@ async fn forward_to_fallback(
     req: HyperRequest<hyper::Body>,
 ) -> Result<HyperResponse<hyper::Body>, StatusCode> {
     info!("No tunnel found for host. Forwarding to fallback URL: {}", backend_url);
-    match PROXY_CLIENT.call(client_ip, backend_url, req).await {
+    match hyper_reverse_proxy::call(client_ip, backend_url, req).await {
         Ok(response) => Ok(response),
         Err(error) => {
             tracing::error!("Failed to forward request: {:?}", error);
