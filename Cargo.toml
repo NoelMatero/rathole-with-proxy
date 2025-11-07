@@ -1,7 +1,4 @@
 [workspace]
-members = [
-    "relay",
-    "client",
-    "shared", "auth",
-]
-resolver = "3"
+members = ["relay", "client", "shared", "auth"]
+exclude = ["rathole"]
+resolver = "2"

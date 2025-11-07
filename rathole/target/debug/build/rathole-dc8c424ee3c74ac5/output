@@ -1,0 +1,5 @@
+cargo:rustc-env=VERGEN_BUILD_TIMESTAMP=2025-11-07T21:41:17.736505362Z
+cargo:rustc-env=VERGEN_BUILD_SEMVER=0.5.0
+cargo:rustc-env=VERGEN_CARGO_TARGET_TRIPLE=x86_64-unknown-linux-gnu
+cargo:rustc-env=VERGEN_CARGO_PROFILE=debug
+cargo:rustc-env=VERGEN_CARGO_FEATURES=base64,client,default,futures_core,futures_sink,hot_reload,native_tls,noise,notify,server,snowstorm,tokio_native_tls,tokio_tungstenite,tokio_util,websocket_native_tls

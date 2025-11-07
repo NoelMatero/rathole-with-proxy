@@ -1,0 +1,10 @@
+/home/noelmatero/trafficswitchproxy/rathole/target/debug/deps/os_str_bytes-014fdaadaf1d09a3.rmeta: /home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/lib.rs /home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/common/mod.rs /home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/common/raw.rs /home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/iter.rs /home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/pattern.rs /home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/raw_str.rs
+
+/home/noelmatero/trafficswitchproxy/rathole/target/debug/deps/os_str_bytes-014fdaadaf1d09a3.d: /home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/lib.rs /home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/common/mod.rs /home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/common/raw.rs /home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/iter.rs /home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/pattern.rs /home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/raw_str.rs
+
+/home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/lib.rs:
+/home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/common/mod.rs:
+/home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/common/raw.rs:
+/home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/iter.rs:
+/home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/pattern.rs:
+/home/noelmatero/.cargo/registry/src/index.crates.io-6f17d22bba15001f/os_str_bytes-6.5.1/src/raw_str.rs:
