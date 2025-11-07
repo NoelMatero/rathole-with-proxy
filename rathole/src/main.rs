@@ -1,64 +1,143 @@
 
 use anyhow::Result;
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path,
+        Path, State,
     },
-    response::Response,
-    routing::get,
+    http::{HeaderMap, Method},
+    response::{IntoResponse, Response},
+    routing::{any, get},
     Router,
 };
 use clap::Parser;
-use rathole::{protocol::ControlMessage, run, Cli};
+use futures_util::StreamExt;
+use rathole::{
+    protocol::{ControlMessage, HttpRequest, HttpResponse},
+    run, Cli,
+};
+use redis::AsyncCommands;
 use std::net::SocketAddr;
 use tokio::{net::TcpListener, signal, sync::broadcast};
 use tracing_subscriber::EnvFilter;
 
-async fn register(Path(id): Path<String>, ws: WebSocketUpgrade) -> Response {
-    println!("Registering tunnel {}", id);
-    ws.on_upgrade(move |socket| handle_socket(socket, id))
+#[derive(Clone)]
+struct AppState {
+    redis: redis::Client,
 }
 
-async fn handle_socket(mut socket: WebSocket, id: String) {
+async fn register(
+    Path(id): Path<String>,
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> Response {
+    println!("Registering tunnel {}", id);
+    ws.on_upgrade(move |socket| handle_socket(socket, id, state.redis))
+}
+
+async fn handle_socket(mut socket: WebSocket, id: String, redis: redis::Client) {
     println!("New tunnel {} connected", id);
-    while let Some(msg) = socket.recv().await {
-        let msg = if let Ok(msg) = msg {
-            msg
-        } else {
-            // client disconnected
-            return;
-        };
 
-        if let Message::Text(text) = msg {
-            let msg: ControlMessage = match serde_json::from_str(&text) {
-                Ok(msg) => msg,
-                Err(err) => {
-                    println!("Failed to parse message: {}", err);
-                    continue;
-                }
-            };
+    let mut con = redis.get_async_connection().await.unwrap();
+    let mut pubsub = con.into_pubsub();
+    pubsub.subscribe(&id).await.unwrap();
 
-            match msg {
-                ControlMessage::Register {
-                    api_key,
-                    target_subdomain,
-                } => {
-                    println!(
-                        "Registering tunnel for subdomain: {} with api key: {}",
-                        target_subdomain, api_key
-                    );
+    let mut rx = pubsub.on_message();
+
+    loop {
+        tokio::select! {
+            Some(msg) = socket.recv() => {
+                if let Ok(msg) = msg {
+                    if let Message::Text(text) = msg {
+                        let msg: ControlMessage = match serde_json::from_str(&text) {
+                            Ok(msg) => msg,
+                            Err(err) => {
+                                println!("Failed to parse message: {}", err);
+                                continue;
+                            }
+                        };
+
+                        match msg {
+                            ControlMessage::Register {
+                                api_key,
+                                target_subdomain,
+                            } => {
+                                println!(
+                                    "Registering tunnel for subdomain: {} with api key: {}",
+                                    target_subdomain, api_key
+                                );
+                            }
+                            ControlMessage::Response { request_id, http } => {
+                                let mut con = redis.get_async_connection().await.unwrap();
+                                let res_str = serde_json::to_string(&http).unwrap();
+                                let _: () = con.set_ex(request_id, res_str, 10).await.unwrap();
+                            }
+                            _ => {
+                                todo!();
+                            }
+                        }
+                    }
+                } else {
+                    // client disconnected
+                    break;
                 }
-                _ => {
-                    todo!();
+            },
+            Some(msg) = rx.next() => {
+                let msg_str: String = msg.get_payload().unwrap();
+                if socket.send(Message::Text(msg_str)).await.is_err() {
+                    // client disconnected
+                    break;
                 }
             }
         }
     }
+
+    println!("Tunnel {} disconnected", id);
 }
 
-async fn tunnel(Path((id, path)): Path<(String, String)>) -> String {
-    format!("Tunneling {} for {}", path, id)
+async fn tunnel(
+    Path((id, path)): Path<(String, String)>,
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    println!("Tunneling {} for {}", path, id);
+
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let mut con = state.redis.get_async_connection().await.unwrap();
+
+    let http_req = HttpRequest {
+        method: method.to_string(),
+        path,
+        headers: headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
+            .collect(),
+        body: body.into_bytes(),
+    };
+    let msg = ControlMessage::Request {
+        request_id: request_id.clone(),
+        http: http_req,
+    };
+    let msg_str = serde_json::to_string(&msg).unwrap();
+    let _: () = con.publish(&id, msg_str).await.unwrap();
+
+    for _ in 0..10 {
+        let res: Option<String> = con.get(&request_id).await.unwrap();
+        if let Some(res_str) = res {
+            let http_res: HttpResponse = serde_json::from_str(&res_str).unwrap();
+            let mut builder = Response::builder().status(http_res.status);
+            for (key, value) in http_res.headers {
+                builder = builder.header(key, value);
+            }
+            return builder.body(Body::from(http_res.body)).unwrap();
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    "Tunnel not found".into_response()
 }
 
 #[tokio::main]
@@ -70,9 +149,13 @@ async fn main() -> Result<()> {
         .with_ansi(is_atty)
         .init();
 
+    let redis = redis::Client::open("redis://127.0.0.1/")?;
+    let state = AppState { redis };
+
     let app = Router::new()
         .route("/register/:id", get(register))
-        .route("/tunnel/:id/*path", get(tunnel));
+        .route("/tunnel/:id/*path", any(tunnel))
+        .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::debug!("listening on {}", addr);
