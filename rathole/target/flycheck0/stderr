@@ -1,0 +1,131 @@
+   0.146342983s  INFO prepare_target{force=false package_id=rathole v0.5.0 (/home/noelmatero/trafficswitchproxy/rathole) target="rathole"}: cargo::core::compiler::fingerprint: fingerprint error for rathole v0.5.0 (/home/noelmatero/trafficswitchproxy/rathole)/Check { test: true }/TargetInner { name: "rathole", doc: true, ..: with_path("/home/noelmatero/trafficswitchproxy/rathole/src/main.rs", Edition2021) }
+   0.146365645s  INFO prepare_target{force=false package_id=rathole v0.5.0 (/home/noelmatero/trafficswitchproxy/rathole) target="rathole"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/noelmatero/trafficswitchproxy/rathole/target/debug/.fingerprint/rathole-2d2fcb849b8cdd62/test-bin-rathole`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/core/src/ops/function.rs:287:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panicking.rs:590:40
+  16: std::panicking::catch_unwind
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panicking.rs:553:19
+  17: std::panic::catch_unwind
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panicking.rs:590:40
+  20: std::panicking::catch_unwind
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panicking.rs:553:19
+  21: std::panic::catch_unwind
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+  25: __libc_start_main_alias_1
+  26: <unknown>
+   0.162291698s  INFO prepare_target{force=false package_id=rathole v0.5.0 (/home/noelmatero/trafficswitchproxy/rathole) target="rathole"}: cargo::core::compiler::fingerprint: fingerprint error for rathole v0.5.0 (/home/noelmatero/trafficswitchproxy/rathole)/Check { test: false }/TargetInner { name: "rathole", doc: true, ..: with_path("/home/noelmatero/trafficswitchproxy/rathole/src/main.rs", Edition2021) }
+   0.162305402s  INFO prepare_target{force=false package_id=rathole v0.5.0 (/home/noelmatero/trafficswitchproxy/rathole) target="rathole"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/noelmatero/trafficswitchproxy/rathole/target/debug/.fingerprint/rathole-9c8465dadb2dee1a/bin-rathole`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/core/src/ops/function.rs:287:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panicking.rs:590:40
+  16: std::panicking::catch_unwind
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panicking.rs:553:19
+  17: std::panic::catch_unwind
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panicking.rs:590:40
+  20: std::panicking::catch_unwind
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panicking.rs:553:19
+  21: std::panic::catch_unwind
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+  25: __libc_start_main_alias_1
+  26: <unknown>
+   0.163952970s  INFO prepare_target{force=false package_id=rathole v0.5.0 (/home/noelmatero/trafficswitchproxy/rathole) target="integration_test"}: cargo::core::compiler::fingerprint: fingerprint error for rathole v0.5.0 (/home/noelmatero/trafficswitchproxy/rathole)/Check { test: true }/TargetInner { kind: "test", name: "integration_test", benched: false, ..: with_path("/home/noelmatero/trafficswitchproxy/rathole/tests/integration_test.rs", Edition2021) }
+   0.163963965s  INFO prepare_target{force=false package_id=rathole v0.5.0 (/home/noelmatero/trafficswitchproxy/rathole) target="integration_test"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/noelmatero/trafficswitchproxy/rathole/target/debug/.fingerprint/rathole-81102d1b6eb3bbe6/test-integration-test-integration_test`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/core/src/ops/function.rs:287:21
+  15: std::panicking::catch_unwind::do_call
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panicking.rs:590:40
+  16: std::panicking::catch_unwind
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panicking.rs:553:19
+  17: std::panic::catch_unwind
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panic.rs:359:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/rt.rs:175:24
+  19: std::panicking::catch_unwind::do_call
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panicking.rs:590:40
+  20: std::panicking::catch_unwind
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panicking.rs:553:19
+  21: std::panic::catch_unwind
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/panic.rs:359:14
+  22: std::rt::lang_start_internal
+             at /rustc/c90bcb9571b7aab0d8beaa2ce8a998ffaf079d38/library/std/src/rt.rs:171:5
+  23: main
+  24: __libc_start_call_main
+  25: __libc_start_main_alias_1
+  26: <unknown>
+    Checking rathole v0.5.0 (/home/noelmatero/trafficswitchproxy/rathole)
+error: could not compile `rathole` (test "integration_test") due to 3 previous errors

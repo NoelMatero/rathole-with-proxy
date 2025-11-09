@@ -1,30 +1,68 @@
-
 use anyhow::Result;
-use axum::{
-    body::Body,
-    extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, State,
-    },
-    http::{HeaderMap, Method},
-    response::{IntoResponse, Response},
-    routing::{any, get},
-    Router,
-};
+use axum::body::{to_bytes, Body};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, Method, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, get, post};
+use axum::{Json, Router};
+use chrono::{Duration, Utc};
 use clap::Parser;
-use futures_util::StreamExt;
-use rathole::{
-    protocol::{ControlMessage, HttpRequest, HttpResponse},
-    run, Cli,
-};
-use redis::AsyncCommands;
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use rathole::protocol::{ControlMessage, HttpRequest, HttpResponse};
+use rathole::{run, Cli};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use tokio::{net::TcpListener, signal, sync::broadcast};
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio::signal;
+use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 use tracing_subscriber::EnvFilter;
+
+use rathole::error::AppError;
+
+type TunnelMap = Arc<RwLock<HashMap<String, mpsc::Sender<Message>>>>;
+type ResponseMap = Arc<RwLock<HashMap<String, oneshot::Sender<HttpResponse>>>>;
 
 #[derive(Clone)]
 struct AppState {
-    redis: redis::Client,
+    tunnels: TunnelMap,
+    responses: ResponseMap,
+    jwt_secret: Arc<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims {
+    sub: String,
+    exp: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginPayload {
+    username: String,
+    password: String,
+}
+
+async fn login(
+    State(state): State<AppState>,
+    Json(payload): Json<LoginPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    if payload.username == "test" && payload.password == "test" {
+        let my_claims = Claims {
+            sub: "test".to_owned(),
+            exp: (Utc::now() + Duration::days(1)).timestamp() as usize,
+        };
+        let token = encode(
+            &Header::default(),
+            &my_claims,
+            &EncodingKey::from_secret(state.jwt_secret.as_bytes()),
+        )
+        .map_err(AppError::JwtError)?;
+        Ok((StatusCode::OK, token))
+    } else {
+        Err(AppError::InvalidCredentials)
+    }
 }
 
 async fn register(
@@ -33,17 +71,21 @@ async fn register(
     State(state): State<AppState>,
 ) -> Response {
     println!("Registering tunnel {}", id);
-    ws.on_upgrade(move |socket| handle_socket(socket, id, state.redis))
+    ws.on_upgrade(move |socket| {
+        handle_socket(socket, id, state.tunnels, state.responses, state.jwt_secret)
+    })
 }
 
-async fn handle_socket(mut socket: WebSocket, id: String, redis: redis::Client) {
+async fn handle_socket(
+    mut socket: WebSocket,
+    id: String,
+    tunnels: TunnelMap,
+    responses: ResponseMap,
+    jwt_secret: Arc<String>,
+) {
     println!("New tunnel {} connected", id);
 
-    let mut con = redis.get_async_connection().await.unwrap();
-    let mut pubsub = con.into_pubsub();
-    pubsub.subscribe(&id).await.unwrap();
-
-    let mut rx = pubsub.on_message();
+    let (tx, mut rx) = mpsc::channel(100);
 
     loop {
         tokio::select! {
@@ -60,18 +102,28 @@ async fn handle_socket(mut socket: WebSocket, id: String, redis: redis::Client) 
 
                         match msg {
                             ControlMessage::Register {
-                                api_key,
+                                token,
                                 target_subdomain,
                             } => {
-                                println!(
-                                    "Registering tunnel for subdomain: {} with api key: {}",
-                                    target_subdomain, api_key
-                                );
+                                let validation = Validation::default();
+                                match decode::<Claims>(&token, &DecodingKey::from_secret(jwt_secret.as_bytes()), &validation) {
+                                    Ok(claims) => {
+                                        println!(
+                                            "Registering tunnel for subdomain: {} with claims: {:?}",
+                                            target_subdomain, claims
+                                        );
+                                        tunnels.write().await.insert(id.clone(), tx.clone());
+                                    }
+                                    Err(err) => {
+                                        println!("Invalid token: {}", err);
+                                        return;
+                                    }
+                                }
                             }
                             ControlMessage::Response { request_id, http } => {
-                                let mut con = redis.get_async_connection().await.unwrap();
-                                let res_str = serde_json::to_string(&http).unwrap();
-                                let _: () = con.set_ex(request_id, res_str, 10).await.unwrap();
+                                if let Some(tx) = responses.write().await.remove(&request_id) {
+                                    tx.send(http).unwrap();
+                                }
                             }
                             _ => {
                                 todo!();
@@ -83,9 +135,8 @@ async fn handle_socket(mut socket: WebSocket, id: String, redis: redis::Client) 
                     break;
                 }
             },
-            Some(msg) = rx.next() => {
-                let msg_str: String = msg.get_payload().unwrap();
-                if socket.send(Message::Text(msg_str)).await.is_err() {
+            Some(msg) = rx.recv() => {
+                if socket.send(msg).await.is_err() {
                     // client disconnected
                     break;
                 }
@@ -94,6 +145,7 @@ async fn handle_socket(mut socket: WebSocket, id: String, redis: redis::Client) 
     }
 
     println!("Tunnel {} disconnected", id);
+    tunnels.write().await.remove(&id);
 }
 
 async fn tunnel(
@@ -102,68 +154,95 @@ async fn tunnel(
     method: Method,
     headers: HeaderMap,
     body: String,
-) -> Response {
+) -> Result<Response, AppError> {
     println!("Tunneling {} for {}", path, id);
 
     let request_id = uuid::Uuid::new_v4().to_string();
-    let mut con = state.redis.get_async_connection().await.unwrap();
 
-    let http_req = HttpRequest {
-        method: method.to_string(),
-        path,
-        headers: headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
-            .collect(),
-        body: body.into_bytes(),
-    };
-    let msg = ControlMessage::Request {
-        request_id: request_id.clone(),
-        http: http_req,
-    };
-    let msg_str = serde_json::to_string(&msg).unwrap();
-    let _: () = con.publish(&id, msg_str).await.unwrap();
+    if let Some(tx) = state.tunnels.read().await.get(&id) {
+        let (res_tx, res_rx) = oneshot::channel();
+        state
+            .responses
+            .write()
+            .await
+            .insert(request_id.clone(), res_tx);
 
-    for _ in 0..10 {
-        let res: Option<String> = con.get(&request_id).await.unwrap();
-        if let Some(res_str) = res {
-            let http_res: HttpResponse = serde_json::from_str(&res_str).unwrap();
-            let mut builder = Response::builder().status(http_res.status);
-            for (key, value) in http_res.headers {
-                builder = builder.header(key, value);
+        let http_req = HttpRequest {
+            method: method.to_string(),
+            path,
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
+                .collect(),
+            body: body.into_bytes(),
+        };
+        let msg = ControlMessage::Request {
+            request_id,
+            http: http_req,
+        };
+        let msg_str = serde_json::to_string(&msg).map_err(AppError::JsonError)?;
+        if tx.send(Message::Text(msg_str)).await.is_ok() {
+            match res_rx.await {
+                Ok(res) => {
+                    let mut builder = Response::builder().status(res.status);
+                    for (key, value) in res.headers {
+                        builder = builder.header(key, value);
+                        //.header(|e| AppError::Other(e.into()))?;
+                    }
+                    return Ok(builder
+                        .body(axum::body::Body::from(res.body))
+                        .map_err(|e| AppError::Other(e.into()))?);
+                }
+                Err(_) => {
+                    return Err(AppError::TunnelResponseError);
+                }
             }
-            return builder.body(Body::from(http_res.body)).unwrap();
+        } else {
+            return Err(AppError::TunnelSendError);
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
-    "Tunnel not found".into_response()
+    Err(AppError::TunnelNotFound)
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), AppError> {
     let is_atty = atty::is(atty::Stream::Stdout);
     let level = "info"; // if RUST_LOG not present, use `info` level
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::from(level)))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::from(level)),
+        )
         .with_ansi(is_atty)
         .init();
 
-    let redis = redis::Client::open("redis://127.0.0.1/")?;
-    let state = AppState { redis };
+    let config = rathole::Config::from_file(&std::path::PathBuf::from("config.toml"))
+        .await
+        .map_err(|e| AppError::Other(e.into()))?;
+
+    let jwt_secret = Arc::new(config.server.unwrap().jwt_secret.to_string());
+
+    let state = AppState {
+        tunnels: TunnelMap::default(),
+        responses: ResponseMap::default(),
+        jwt_secret,
+    };
 
     let app = Router::new()
+        .route("/login", post(login))
         .route("/register/:id", get(register))
         .route("/tunnel/:id/*path", any(tunnel))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::debug!("listening on {}", addr);
-    let listener = TcpListener::bind(addr).await.unwrap();
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| AppError::IoError(e))?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
-        .unwrap();
+        .map_err(|e| AppError::Other(e.into()))?;
 
     Ok(())
 }
@@ -196,17 +275,20 @@ async fn shutdown_signal() {
 
 #[tokio::main]
 #[allow(dead_code)]
-async fn legacy_main() -> Result<()> {
+async fn legacy_main() -> Result<(), AppError> {
     let args = Cli::parse();
 
     let (shutdown_tx, shutdown_rx) = broadcast::channel::<bool>(1);
+    let (_update_tx, mut update_rx) = mpsc::channel(1);
+
+    let cloned_shutdown_tx = shutdown_tx.clone();
     tokio::spawn(async move {
         if let Err(e) = signal::ctrl_c().await {
             // Something really weird happened. So just panic
             panic!("Failed to listen for the ctrl-c signal: {:?}", e);
         }
 
-        if let Err(e) = shutdown_tx.send(true) {
+        if let Err(e) = cloned_shutdown_tx.send(true) {
             // shutdown signal must be catched and handle properly
             // `rx` must not be dropped
             panic!("Failed to send shutdown signal: {:?}", e);
@@ -232,5 +314,7 @@ async fn legacy_main() -> Result<()> {
             .init();
     }
 
-    run(args, shutdown_rx).await
+    run(args, shutdown_rx, shutdown_tx.clone(), &mut update_rx)
+        .await
+        .map_err(|e| AppError::Other(e.into()))
 }

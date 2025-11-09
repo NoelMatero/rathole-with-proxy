@@ -6,18 +6,30 @@ use hyper::{
     Client, Request, Body,
 };
 use rathole::protocol::{ControlMessage, HttpResponse};
+use serde_json::json;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message, WebSocketStream};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let client = reqwest::Client::new();
+    let res = client
+        .post("http://127.0.0.1:3000/login")
+        .json(&json!({
+            "username": "test",
+            "password": "test"
+        }))
+        .send()
+        .await?;
+    let token = res.text().await?;
+
     let (ws_stream, _) = connect_async("ws://127.0.0.1:3000/register/test").await?;
     println!("Connected to server");
 
     let (mut write, mut read) = ws_stream.split();
 
     let register_msg = ControlMessage::Register {
-        api_key: "test_key".to_string(),
+        token,
         target_subdomain: "test".to_string(),
     };
     let register_msg_str = serde_json::to_string(&register_msg)?;

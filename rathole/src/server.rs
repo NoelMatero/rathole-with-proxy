@@ -41,8 +41,8 @@ const HANDSHAKE_TIMEOUT: u64 = 5; // Timeout for transport handshake
 // The entrypoint of running a server
 pub async fn run_server(
     config: Config,
-    shutdown_rx: broadcast::Receiver<bool>,
-    update_rx: mpsc::Receiver<ConfigChange>,
+    shutdown_rx: &mut broadcast::Receiver<bool>,
+    update_rx: &mut mpsc::Receiver<ConfigChange>,
 ) -> Result<()> {
     let config = match config.server {
             Some(config) => config,
@@ -134,8 +134,8 @@ impl<T: 'static + Transport> Server<T> {
     // The entry point of Server
     pub async fn run(
         &mut self,
-        mut shutdown_rx: broadcast::Receiver<bool>,
-        mut update_rx: mpsc::Receiver<ConfigChange>,
+        shutdown_rx: &mut broadcast::Receiver<bool>,
+        update_rx: &mut mpsc::Receiver<ConfigChange>,
     ) -> Result<()> {
         // Listen at `server.bind_addr`
         let l = self

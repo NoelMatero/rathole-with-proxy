@@ -261,7 +261,7 @@ pub struct HttpResponse {
 #[serde(tag = "type")]
 pub enum ControlMessage {
     Register {
-        api_key: String,
+        token: String,
         target_subdomain: String,
     },
     Request {

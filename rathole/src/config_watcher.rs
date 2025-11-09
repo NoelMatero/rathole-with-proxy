@@ -1,13 +1,9 @@
-use crate::{
-    config::{ClientConfig, ClientServiceConfig, ServerConfig, ServerServiceConfig},
-    Config,
-};
+use crate::config::{ClientConfig, ClientServiceConfig, ServerConfig, ServerServiceConfig};
+use crate::Config;
 use anyhow::{Context, Result};
-use std::{
-    collections::HashMap,
-    env,
-    path::{Path, PathBuf},
-};
+use std::collections::HashMap;
+use std::env;
+use std::path::{Path, PathBuf};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, instrument};
 
@@ -95,6 +91,13 @@ impl InstanceConfig for ClientConfig {
 
 pub struct ConfigWatcherHandle {
     pub event_rx: mpsc::UnboundedReceiver<ConfigChange>,
+}
+
+impl ConfigWatcherHandle {
+    pub async fn shutdown(mut self, shutdown_tx: broadcast::Sender<bool>) -> Result<()> {
+        let _ = shutdown_tx.send(true);
+        Ok(())
+    }
 }
 
 impl ConfigWatcherHandle {

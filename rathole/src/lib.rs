@@ -1,255 +1,113 @@
 mod cli;
+mod client;
 mod config;
 mod config_watcher;
 mod constants;
 mod helper;
-mod multi_map;
-pub mod protocol;
+mod server;
 mod transport;
 
-pub use cli::Cli;
-use cli::KeypairType;
-pub use config::Config;
-pub use constants::UDP_BUFFER_SIZE;
+pub mod error;
+pub mod multi_map;
+pub mod protocol;
 
+pub use cli::Cli;
+pub use client::run_client;
+pub use config::Config;
+pub use error::AppError;
+pub use server::run_server;
+
+use crate::config_watcher::ConfigChange;
 use anyhow::Result;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info};
 
-#[cfg(feature = "client")]
-mod client;
-#[cfg(feature = "client")]
-use client::run_client;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 
-#[cfg(feature = "server")]
-mod server;
-#[cfg(feature = "server")]
-use server::run_server;
-
-use crate::config_watcher::{ConfigChange, ConfigWatcherHandle};
-
-const DEFAULT_CURVE: KeypairType = KeypairType::X25519;
-
-fn get_str_from_keypair_type(curve: KeypairType) -> &'static str {
-    match curve {
-        KeypairType::X25519 => "25519",
-        KeypairType::X448 => "448",
-    }
-}
-
-#[cfg(feature = "noise")]
-fn genkey(curve: Option<KeypairType>) -> Result<()> {
-    let curve = curve.unwrap_or(DEFAULT_CURVE);
-    let builder = snowstorm::Builder::new(
-        format!(
-            "Noise_KK_{}_ChaChaPoly_BLAKE2s",
-            get_str_from_keypair_type(curve)
-        )
-        .parse()?,
-    );
-    let keypair = builder.generate_keypair()?;
-
-    println!("Private Key:\n{}\n", base64::encode(keypair.private));
-    println!("Public Key:\n{}", base64::encode(keypair.public));
-    Ok(())
-}
-
-#[cfg(not(feature = "noise"))]
-fn genkey(curve: Option<KeypairType>) -> Result<()> {
-    crate::helper::feature_not_compile("nosie")
-}
-
-pub async fn run(args: Cli, shutdown_rx: broadcast::Receiver<bool>) -> Result<()> {
-    if args.genkey.is_some() {
-        return genkey(args.genkey.unwrap());
-    }
-
-    // Raise `nofile` limit on linux and mac
-    fdlimit::raise_fd_limit();
-
-    // Spawn a config watcher. The watcher will send a initial signal to start the instance with a config
-    let config_path = args.config_path.as_ref().unwrap();
-    let mut cfg_watcher = ConfigWatcherHandle::new(config_path, shutdown_rx).await?;
-
-    // shutdown_tx owns the instance
-    let (shutdown_tx, _) = broadcast::channel(1);
-
-    // (The join handle of the last instance, The service update channel sender)
-    let mut last_instance: Option<(tokio::task::JoinHandle<_>, mpsc::Sender<ConfigChange>)> = None;
-
-    while let Some(e) = cfg_watcher.event_rx.recv().await {
-        match e {
-            ConfigChange::General(config) => {
-                if let Some((i, _)) = last_instance {
-                    info!("General configuration change detected. Restarting...");
-                    shutdown_tx.send(true)?;
-                    i.await??;
-                }
-
-                debug!("{:?}", config);
-
-                let (service_update_tx, service_update_rx) = mpsc::channel(1024);
-
-                last_instance = Some((
-                    tokio::spawn(run_instance(
-                        *config,
-                        args.clone(),
-                        shutdown_tx.subscribe(),
-                        service_update_rx,
-                    )),
-                    service_update_tx,
-                ));
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, error_message) = match self {
+            AppError::InvalidCredentials => {
+                (StatusCode::UNAUTHORIZED, "Invalid credentials".to_string())
             }
-            ev => {
-                info!("Service change detected. {:?}", ev);
-                if let Some((_, service_update_tx)) = &last_instance {
-                    let _ = service_update_tx.send(ev).await;
-                }
-            }
-        }
+            AppError::InvalidToken => (StatusCode::UNAUTHORIZED, "Invalid token".to_string()),
+            AppError::TunnelNotFound => (StatusCode::NOT_FOUND, "Tunnel not found".to_string()),
+            AppError::TunnelSendError => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to send request to tunnel".to_string(),
+            ),
+            AppError::TunnelResponseError => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to get response from tunnel".to_string(),
+            ),
+            AppError::WebSocketError(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("WebSocket error: {}", e),
+            ),
+            AppError::JsonError(e) => (StatusCode::BAD_REQUEST, format!("JSON error: {}", e)),
+            AppError::HyperError(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Hyper error: {}", e),
+            ),
+            AppError::ReqwestError(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Reqwest error: {}", e),
+            ),
+            AppError::JwtError(e) => (StatusCode::UNAUTHORIZED, format!("JWT error: {}", e)),
+            AppError::IoError(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("IO error: {}", e),
+            ),
+            AppError::Other(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Other error: {}", e),
+            ),
+        };
+
+        (status, error_message).into_response()
     }
-
-    let _ = shutdown_tx.send(true);
-
-    Ok(())
 }
 
-async fn run_instance(
-    config: Config,
+pub async fn run(
     args: Cli,
-    shutdown_rx: broadcast::Receiver<bool>,
-    service_update: mpsc::Receiver<ConfigChange>,
+    mut shutdown_rx: broadcast::Receiver<bool>,
+    shutdown_tx: broadcast::Sender<bool>,
+    update_rx: &mut mpsc::Receiver<ConfigChange>,
 ) -> Result<()> {
-    match determine_run_mode(&config, &args) {
-        RunMode::Undetermine => panic!("Cannot determine running as a server or a client"),
-        RunMode::Client => {
-            #[cfg(not(feature = "client"))]
-            crate::helper::feature_not_compile("client");
-            #[cfg(feature = "client")]
-            run_client(config, shutdown_rx, service_update).await
-        }
-        RunMode::Server => {
-            #[cfg(not(feature = "server"))]
-            crate::helper::feature_not_compile("server");
-            #[cfg(feature = "server")]
-            run_server(config, shutdown_rx, service_update).await
-        }
-    }
-}
-
-#[derive(PartialEq, Eq, Debug)]
-enum RunMode {
-    Server,
-    Client,
-    Undetermine,
-}
-
-fn determine_run_mode(config: &Config, args: &Cli) -> RunMode {
-    use RunMode::*;
-    if args.client && args.server {
-        Undetermine
-    } else if args.client {
-        Client
-    } else if args.server {
-        Server
-    } else if config.client.is_some() && config.server.is_none() {
-        Client
-    } else if config.server.is_some() && config.client.is_none() {
-        Server
+    //let (update_tx, update_rx) = mpsc::channel(1);
+    let watcher: Option<config_watcher::ConfigWatcherHandle> = if let Some(path) = &args.config_path
+    {
+        Some(config_watcher::ConfigWatcherHandle::new(path, shutdown_rx.resubscribe()).await?)
     } else {
-        Undetermine
-    }
-}
+        None
+    };
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    let config = Config::from_file(
+        args.config_path
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("config is not specified"))?,
+    )
+    .await?;
 
-    #[test]
-    fn test_determine_run_mode() {
-        use config::*;
-        use RunMode::*;
+    if config.server.is_some() {
+        run_server(config, &mut shutdown_rx, update_rx).await?;
+    } else if config.client.is_some() {
+        loop {
+            let mut client_shutdown_rx = shutdown_rx.resubscribe();
 
-        struct T {
-            cfg_s: bool,
-            cfg_c: bool,
-            arg_s: bool,
-            arg_c: bool,
-            run_mode: RunMode,
-        }
-
-        let tests = [
-            T {
-                cfg_s: false,
-                cfg_c: false,
-                arg_s: false,
-                arg_c: false,
-                run_mode: Undetermine,
-            },
-            T {
-                cfg_s: true,
-                cfg_c: false,
-                arg_s: false,
-                arg_c: false,
-                run_mode: Server,
-            },
-            T {
-                cfg_s: false,
-                cfg_c: true,
-                arg_s: false,
-                arg_c: false,
-                run_mode: Client,
-            },
-            T {
-                cfg_s: true,
-                cfg_c: true,
-                arg_s: false,
-                arg_c: false,
-                run_mode: Undetermine,
-            },
-            T {
-                cfg_s: true,
-                cfg_c: true,
-                arg_s: true,
-                arg_c: false,
-                run_mode: Server,
-            },
-            T {
-                cfg_s: true,
-                cfg_c: true,
-                arg_s: false,
-                arg_c: true,
-                run_mode: Client,
-            },
-            T {
-                cfg_s: true,
-                cfg_c: true,
-                arg_s: true,
-                arg_c: true,
-                run_mode: Undetermine,
-            },
-        ];
-
-        for t in tests {
-            let config = Config {
-                server: match t.cfg_s {
-                    true => Some(ServerConfig::default()),
-                    false => None,
-                },
-                client: match t.cfg_c {
-                    true => Some(ClientConfig::default()),
-                    false => None,
-                },
-            };
-
-            let args = Cli {
-                config_path: Some(std::path::PathBuf::new()),
-                server: t.arg_s,
-                client: t.arg_c,
-                ..Default::default()
-            };
-
-            assert_eq!(determine_run_mode(&config, &args), t.run_mode);
+            tokio::select! {
+                _ = run_client(config.clone(), &mut client_shutdown_rx, update_rx) => {},
+                _ = shutdown_rx.recv() => {
+                    break;
+                }
+            }
         }
     }
+
+    if watcher.is_some() {
+        let _ = shutdown_tx.send(true); // tell watcher task to exit
+    }
+
+    Ok(())
 }

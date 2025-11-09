@@ -1,0 +1,5 @@
+cargo:rerun-if-changed=build.rs
+cargo:rustc-env=VERGEN_BUILD_TIMESTAMP=2025-11-08T00:19:19.830982584Z
+cargo:rustc-env=VERGEN_GIT_SEMVER=v3.2.0-86-g95fc0f5
+cargo:rustc-cfg=nightly_lints
+cargo:rustc-cfg=msrv
