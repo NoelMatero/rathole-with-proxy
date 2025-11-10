@@ -11,13 +11,16 @@ use clap::Parser;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use rathole::protocol::{ControlMessage, HttpRequest, HttpResponse};
 use rathole::{run, Cli};
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration as StdDuration;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
+use tokio::time::timeout;
 use tracing_subscriber::EnvFilter;
 
 use rathole::error::AppError;
@@ -26,10 +29,16 @@ type TunnelMap = Arc<RwLock<HashMap<String, mpsc::Sender<Message>>>>;
 type ResponseMap = Arc<RwLock<HashMap<String, oneshot::Sender<HttpResponse>>>>;
 
 #[derive(Clone)]
+struct RedisManager {
+    conn: redis::aio::MultiplexedConnection,
+}
+
+#[derive(Clone)]
 struct AppState {
     tunnels: TunnelMap,
     responses: ResponseMap,
     jwt_secret: Arc<String>,
+    redis: Arc<RedisManager>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -69,83 +78,110 @@ async fn register(
     Path(id): Path<String>,
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    cleanup_tx: mpsc::Sender<String>,
 ) -> Response {
     println!("Registering tunnel {}", id);
-    ws.on_upgrade(move |socket| {
-        handle_socket(socket, id, state.tunnels, state.responses, state.jwt_secret)
-    })
+    ws.on_upgrade(move |socket| handle_socket(socket, id, state, cleanup_tx))
 }
 
 async fn handle_socket(
     mut socket: WebSocket,
     id: String,
-    tunnels: TunnelMap,
-    responses: ResponseMap,
-    jwt_secret: Arc<String>,
+    state: AppState,
+    cleanup_tx: mpsc::Sender<String>,
 ) {
     println!("New tunnel {} connected", id);
 
-    let (tx, mut rx) = mpsc::channel(100);
+    // The first message from the client must be a Register message
+    if let Some(Ok(Message::Text(text))) = socket.recv().await {
+        let msg: ControlMessage = match serde_json::from_str(&text) {
+            Ok(msg) => msg,
+            Err(err) => {
+                println!("Failed to parse register message: {}", err);
+                return;
+            }
+        };
 
-    loop {
-        tokio::select! {
-            Some(msg) = socket.recv() => {
-                if let Ok(msg) = msg {
-                    if let Message::Text(text) = msg {
-                        let msg: ControlMessage = match serde_json::from_str(&text) {
-                            Ok(msg) => msg,
-                            Err(err) => {
-                                println!("Failed to parse message: {}", err);
-                                continue;
-                            }
-                        };
+        if let ControlMessage::Register {
+            token,
+            target_subdomain,
+        } = msg
+        {
+            let validation = Validation::default();
+            match decode::<Claims>(
+                &token,
+                &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
+                &validation,
+            ) {
+                Ok(claims) => {
+                    println!(
+                        "Registering tunnel for subdomain: {} with claims: {:?}",
+                        target_subdomain, claims
+                    );
 
-                        match msg {
-                            ControlMessage::Register {
-                                token,
-                                target_subdomain,
-                            } => {
-                                let validation = Validation::default();
-                                match decode::<Claims>(&token, &DecodingKey::from_secret(jwt_secret.as_bytes()), &validation) {
-                                    Ok(claims) => {
-                                        println!(
-                                            "Registering tunnel for subdomain: {} with claims: {:?}",
-                                            target_subdomain, claims
-                                        );
-                                        tunnels.write().await.insert(id.clone(), tx.clone());
+                    let mut redis_conn = state.redis.conn.clone();
+                    let _: () = redis_conn
+                        .hset(format!("tunnel:{}", id), "status", "online")
+                        .await
+                        .unwrap();
+
+                    let (tx, mut rx) = mpsc::channel(100);
+                    state.tunnels.write().await.insert(id.clone(), tx);
+
+                    // Main loop to forward messages
+                    loop {
+                        tokio::select! {
+                            // Handle messages from the local tunnel handler → client
+                            Some(msg) = rx.recv() => {
+                                if socket.send(msg.clone()).await.is_err() {
+                                    println!("Failed to send message to {id}, disconnecting.");
+                                    break;
+                                }
+                            },
+
+                            // Handle messages from client → tunnel handler
+                            res = async { timeout(StdDuration::from_secs(30), socket.recv()).await } => {
+                                match res {
+                                    // Received message successfully
+                                    Ok(Some(Ok(Message::Text(text)))) => {
+                                        println!("Received message from {id}: {}", text);
+                                        // handle message normally
                                     }
-                                    Err(err) => {
-                                        println!("Invalid token: {}", err);
-                                        return;
+
+                                    // Client closed, timeout, or error
+                                    Ok(Some(Err(e))) => {
+                                        println!("Error from {id}: {}", e);
+                                        break;
+                                    }
+                                    Ok(None) => {
+                                        println!("Client {id} disconnected.");
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        println!("Timeout waiting for {id}, closing.");
+                                        break;
+                                    }
+
+                                    _ => {
+                                        continue;
                                     }
                                 }
-                            }
-                            ControlMessage::Response { request_id, http } => {
-                                if let Some(tx) = responses.write().await.remove(&request_id) {
-                                    tx.send(http).unwrap();
-                                }
-                            }
-                            _ => {
-                                todo!();
                             }
                         }
                     }
-                } else {
-                    // client disconnected
-                    break;
                 }
-            },
-            Some(msg) = rx.recv() => {
-                if socket.send(msg).await.is_err() {
-                    // client disconnected
-                    break;
+                Err(err) => {
+                    println!("Invalid token for tunnel {}: {}", id, err);
                 }
             }
+        } else {
+            println!("Tunnel {} failed to send a register message", id);
         }
     }
 
-    println!("Tunnel {} disconnected", id);
-    tunnels.write().await.remove(&id);
+    // When the loop breaks, the client has disconnected.
+    // Send the ID to the cleanup task.
+    let _ = cleanup_tx.send(id).await;
 }
 
 async fn tunnel(
@@ -207,8 +243,11 @@ async fn tunnel(
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
+    println!("works");
     let is_atty = atty::is(atty::Stream::Stdout);
     let level = "info"; // if RUST_LOG not present, use `info` level
+    println!("works");
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::from(level)),
@@ -216,21 +255,62 @@ async fn main() -> Result<(), AppError> {
         .with_ansi(is_atty)
         .init();
 
+    println!("works");
+
     let config = rathole::Config::from_file(&std::path::PathBuf::from("config.toml"))
         .await
         .map_err(|e| AppError::Other(e.into()))?;
 
+    println!("works");
+
     let jwt_secret = Arc::new(config.server.unwrap().jwt_secret.to_string());
+
+    let redis_client =
+        redis::Client::open("redis://127.0.0.1/").map_err(|e| AppError::Other(e.into()))?;
+    println!("works");
+
+    let redis_conn_manager = redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|e| AppError::Other(e.into()))?;
+    println!("works");
+
+    let redis_manager = Arc::new(RedisManager {
+        conn: redis_conn_manager,
+    });
+
+    println!("works");
+
+    let (cleanup_tx, mut cleanup_rx) = mpsc::channel::<String>(100);
 
     let state = AppState {
         tunnels: TunnelMap::default(),
         responses: ResponseMap::default(),
         jwt_secret,
+        redis: redis_manager,
     };
+
+    let state_clone = state.clone();
+    let cleanup_tx_clone = cleanup_tx.clone();
+    tokio::spawn(async move {
+        println!("Cleanup task started");
+        while let Some(id) = cleanup_rx.recv().await {
+            println!("Cleaning up tunnel: {}", id);
+            let mut redis_conn = state_clone.redis.conn.clone();
+            let _: () = redis_conn
+                .hset(format!("tunnel:{}", id), "status", "offline")
+                .await
+                .unwrap();
+            state_clone.tunnels.write().await.remove(&id);
+        }
+    });
 
     let app = Router::new()
         .route("/login", post(login))
-        .route("/register/:id", get(register))
+        .route(
+            "/register/:id",
+            get(move |path, ws, state| register(path, ws, state, cleanup_tx)),
+        )
         .route("/tunnel/:id/*path", any(tunnel))
         .with_state(state);
 
@@ -273,7 +353,7 @@ async fn shutdown_signal() {
     println!("signal received, starting graceful shutdown");
 }
 
-#[tokio::main]
+/*#[tokio::main]
 #[allow(dead_code)]
 async fn legacy_main() -> Result<(), AppError> {
     let args = Cli::parse();
@@ -317,4 +397,4 @@ async fn legacy_main() -> Result<(), AppError> {
     run(args, shutdown_rx, shutdown_tx.clone(), &mut update_rx)
         .await
         .map_err(|e| AppError::Other(e.into()))
-}
+}*/

@@ -1,7 +1,0 @@
-/home/noelmatero/trafficswitchproxy/rathole/target/debug/deps/pin_utils-5ffc24cb5ba0e7c5.d: /home/noelmatero/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-utils-0.1.0/src/lib.rs /home/noelmatero/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-utils-0.1.0/src/stack_pin.rs /home/noelmatero/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-utils-0.1.0/src/projection.rs
-
-/home/noelmatero/trafficswitchproxy/rathole/target/debug/deps/libpin_utils-5ffc24cb5ba0e7c5.rmeta: /home/noelmatero/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-utils-0.1.0/src/lib.rs /home/noelmatero/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-utils-0.1.0/src/stack_pin.rs /home/noelmatero/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-utils-0.1.0/src/projection.rs
-
-/home/noelmatero/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-utils-0.1.0/src/lib.rs:
-/home/noelmatero/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-utils-0.1.0/src/stack_pin.rs:
-/home/noelmatero/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-utils-0.1.0/src/projection.rs:
