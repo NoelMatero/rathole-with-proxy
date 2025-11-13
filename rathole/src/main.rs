@@ -10,7 +10,8 @@ use chrono::{Duration, Utc};
 use clap::Parser;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use rathole::protocol::{ControlMessage, HttpRequest, HttpResponse};
-use rathole::{run, Cli};
+use rathole::proxy::proxy_handler;
+use rathole::{run, Cli, RedisManager};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -28,10 +29,10 @@ use rathole::error::AppError;
 type TunnelMap = Arc<RwLock<HashMap<String, mpsc::Sender<Message>>>>;
 type ResponseMap = Arc<RwLock<HashMap<String, oneshot::Sender<HttpResponse>>>>;
 
-#[derive(Clone)]
+/*#[derive(Clone)]
 struct RedisManager {
     conn: redis::aio::MultiplexedConnection,
-}
+}*/
 
 #[derive(Clone)]
 struct AppState {
@@ -217,7 +218,7 @@ async fn tunnel(
             http: http_req,
         };
         let msg_str = serde_json::to_string(&msg).map_err(AppError::JsonError)?;
-        if tx.send(Message::Text(msg_str)).await.is_ok() {
+        if tx.send(Message::Text(msg_str.into())).await.is_ok() {
             match res_rx.await {
                 Ok(res) => {
                     let mut builder = Response::builder().status(res.status);
@@ -225,9 +226,9 @@ async fn tunnel(
                         builder = builder.header(key, value);
                         //.header(|e| AppError::Other(e.into()))?;
                     }
-                    return Ok(builder
+                    return builder
                         .body(axum::body::Body::from(res.body))
-                        .map_err(|e| AppError::Other(e.into()))?);
+                        .map_err(|e| AppError::Other(e.into()));
                 }
                 Err(_) => {
                     return Err(AppError::TunnelResponseError);

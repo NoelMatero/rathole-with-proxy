@@ -151,7 +151,7 @@ impl AsyncWrite for WebsocketTunnel {
             .poll_ready(cx)
             .map_err(|err| Error::new(ErrorKind::Other, err)))?;
 
-        match Pin::new(&mut sw.inner).start_send(Message::Binary(buf.to_vec())) {
+        match Pin::new(&mut sw.inner).start_send(Message::Binary(buf.to_vec().into())) {
             Ok(()) => Poll::Ready(Ok(buf.len())),
             Err(e) => Poll::Ready(Err(Error::new(ErrorKind::Other, e))),
         }
@@ -194,10 +194,9 @@ impl Transport for WebsocketTransport {
             .as_ref()
             .ok_or_else(|| anyhow!("Missing websocket config"))?;
 
-        let conf = WebSocketConfig {
-            write_buffer_size: 0,
-            ..WebSocketConfig::default()
-        };
+        let mut conf = WebSocketConfig::default();
+        conf.write_buffer_size = 0;
+
         let sub = match wsconfig.tls {
             true => SubTransport::Secure(TlsTransport::new(config)?),
             false => SubTransport::Insecure(TcpTransport::new(config)?),
@@ -243,9 +242,12 @@ impl Transport for WebsocketTransport {
             SubTransport::Insecure(t) => TransportStream::Insecure(t.connect(addr).await?),
             SubTransport::Secure(t) => TransportStream::Secure(t.connect(addr).await?),
         };
-        let (wsstream, _) = client_async_with_config(url, tstream, Some(self.conf))
-            .await
-            .expect("failed to connect");
+
+        let a = url.as_str();
+
+        let Ok((wsstream, _)) = client_async_with_config(a, tstream, Some(self.conf)).await else {
+            todo!()
+        };
         let tun = WebsocketTunnel {
             inner: StreamReader::new(StreamWrapper { inner: wsstream }),
         };

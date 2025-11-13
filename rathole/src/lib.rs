@@ -10,6 +10,7 @@ mod transport;
 pub mod error;
 pub mod multi_map;
 pub mod protocol;
+pub mod proxy;
 
 pub use cli::Cli;
 pub use client::run_client;
@@ -24,6 +25,11 @@ use tracing::{debug, info};
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+
+#[derive(Clone)]
+pub struct RedisManager {
+    pub conn: redis::aio::MultiplexedConnection,
+}
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {

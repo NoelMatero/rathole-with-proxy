@@ -1,4 +1,7 @@
+#[tokio::main]
+async fn main() {}
 
+/*
 
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
@@ -96,4 +99,4 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
+}*/
