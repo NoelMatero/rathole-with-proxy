@@ -1,17 +1,21 @@
 use anyhow::Result;
-use axum::body::{to_bytes, Body};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
+use bytes::Bytes;
 use chrono::{Duration, Utc};
-use clap::Parser;
+use http_body_util::Full;
+use hyper_rustls::HttpsConnectorBuilder;
+use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::rt::TokioExecutor;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use rathole::error::AppError;
 use rathole::protocol::{ControlMessage, HttpRequest, HttpResponse};
-use rathole::proxy::proxy_handler;
-use rathole::{run, Cli, RedisManager};
+use rathole::proxy::AppState;
+use rathole::RedisManager;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -20,11 +24,9 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use tokio::net::TcpListener;
 use tokio::signal;
-use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::time::timeout;
 use tracing_subscriber::EnvFilter;
-
-use rathole::error::AppError;
 
 type TunnelMap = Arc<RwLock<HashMap<String, mpsc::Sender<Message>>>>;
 type ResponseMap = Arc<RwLock<HashMap<String, oneshot::Sender<HttpResponse>>>>;
@@ -34,13 +36,13 @@ struct RedisManager {
     conn: redis::aio::MultiplexedConnection,
 }*/
 
-#[derive(Clone)]
+/*#[derive(Clone)]
 struct AppState {
     tunnels: TunnelMap,
     responses: ResponseMap,
     jwt_secret: Arc<String>,
     redis: Arc<RedisManager>,
-}
+}*/
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
@@ -284,11 +286,24 @@ async fn main() -> Result<(), AppError> {
 
     let (cleanup_tx, mut cleanup_rx) = mpsc::channel::<String>(100);
 
+    let https = HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .unwrap() // TODO:
+        .https_or_http()
+        .enable_http1()
+        .build();
+
+    let hyper_client =
+        HyperClient::builder(TokioExecutor::default()).build::<_, Full<Bytes>>(https);
+
     let state = AppState {
         tunnels: TunnelMap::default(),
         responses: ResponseMap::default(),
         jwt_secret,
         redis: redis_manager,
+        hyper_client,
+        default_cloud_backend: "localhost:4000".to_string(),
+        request_timeout: StdDuration::from_secs(10),
     };
 
     let state_clone = state.clone();
