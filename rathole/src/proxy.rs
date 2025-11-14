@@ -51,6 +51,7 @@ pub async fn proxy_handler(
     State(state): State<AppState>,
     axum_req: AxumRequest<AxumBody>,
 ) -> Result<AxumResponse<AxumBody>, StatusCode> {
+    println!("req: {:?}", axum_req);
     // 1) resolve subdomain from Host header
     let host = axum_req
         .headers()

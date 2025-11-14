@@ -14,7 +14,7 @@ use hyper_util::rt::TokioExecutor;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use rathole::error::AppError;
 use rathole::protocol::{ControlMessage, HttpRequest, HttpResponse};
-use rathole::proxy::AppState;
+use rathole::proxy::{proxy_handler, AppState};
 use rathole::RedisManager;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
@@ -195,6 +195,11 @@ async fn tunnel(
     body: String,
 ) -> Result<Response, AppError> {
     println!("Tunneling {} for {}", path, id);
+    println!("Incoming tunnel request for id: {}", id);
+    println!(
+        "Tunnels currently registered: {:?}",
+        state.tunnels.read().await.keys()
+    );
 
     let request_id = uuid::Uuid::new_v4().to_string();
 
@@ -303,7 +308,7 @@ async fn main() -> Result<(), AppError> {
         redis: redis_manager,
         hyper_client,
         default_cloud_backend: "localhost:4000".to_string(),
-        request_timeout: StdDuration::from_secs(10),
+        request_timeout: StdDuration::from_secs(1000),
     };
 
     let state_clone = state.clone();
@@ -324,14 +329,15 @@ async fn main() -> Result<(), AppError> {
     let app = Router::new()
         .route("/login", post(login))
         .route(
-            "/register/:id",
-            get(move |path, ws, state| register(path, ws, state, cleanup_tx)),
+            "/register/{id}",
+            get(move |path, ws, state| register(path, ws, state, cleanup_tx_clone.clone())),
         )
-        .route("/tunnel/:id/*path", any(tunnel))
-        .with_state(state);
+        .route("/tunnel/{id}/{*path}", any(tunnel))
+        .fallback(axum::routing::any(proxy_handler))
+        .with_state(state.clone());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    tracing::debug!("listening on {}", addr);
+    println!("listening on {}", addr);
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| AppError::IoError(e))?;
@@ -340,6 +346,18 @@ async fn main() -> Result<(), AppError> {
         .await
         .map_err(|e| AppError::Other(e.into()))?;
 
+    println!(
+        "Current tunnels: {:?}",
+        state
+            .tunnels
+            .clone()
+            .read()
+            .await
+            .keys()
+            .collect::<Vec<_>>()
+    );
+
+    drop(cleanup_tx.clone());
     Ok(())
 }
 
