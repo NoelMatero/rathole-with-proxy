@@ -21,7 +21,6 @@ pub use server::run_server;
 use crate::config_watcher::ConfigChange;
 use anyhow::Result;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, info};
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

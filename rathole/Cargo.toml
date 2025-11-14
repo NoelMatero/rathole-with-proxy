@@ -152,3 +152,7 @@ vergen = { version = "7.4.2", default-features = false, features = [
   "cargo",
 ] }
 anyhow = "1.0"
+
+[dev-dependencies]
+redis = { version = "0.25.0", features = ["tokio-comp"] }
+tokio = { version = "1", features = ["full"] }

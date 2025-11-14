@@ -1,24 +1,19 @@
-use crate::constants::UDP_BUFFER_SIZE;
 use crate::protocol::{ControlMessage, HttpRequest, HttpResponse};
-use crate::RedisManager;
 use axum::body::{to_bytes, Body as AxumBody};
 use axum::extract::State;
 use axum::http::{
-    header, HeaderMap, Method, Request as AxumRequest, Response as AxumResponse, StatusCode,
+    header, HeaderMap, Request as AxumRequest, Response as AxumResponse, StatusCode,
 };
 //use hyper::body::Body as HyperBody;
 //use hyper::body::Incoming as HyperBody;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::body::{Body as _, Incoming as HyperBody}; // for trait methods like .collect()
+ // for trait methods like .collect()
 use hyper_util::client::legacy::Client as HyperClient;
 //use hyper_util::HttpsConnectorBuilder;
 use http_body_util::BodyExt;
-use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::rt::TokioExecutor;
 use serde_json;
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::usize;
@@ -230,4 +225,145 @@ fn headers_to_map(headers: &HeaderMap) -> Vec<(String, String)> {
                 .map(|s| (k.as_str().to_string(), s.to_string()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+    use hyper_util::rt::TokioExecutor;
+
+    #[test]
+    fn test_headers_to_map() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Content-Type", HeaderValue::from_static("application/json"));
+        headers.insert("X-Custom-Header", HeaderValue::from_static("some-value"));
+
+        let result = headers_to_map(&headers);
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&("content-type".to_string(), "application/json".to_string())));
+        assert!(result.contains(&("x-custom-header".to_string(), "some-value".to_string())));
+    }
+
+    // Helper to create a mock AppState
+    #[allow(dead_code)]
+    async fn mock_app_state() -> AppState {
+        let https = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .expect("no native root CA certificates found")
+            .https_or_http()
+            .enable_http1()
+            .build();
+        let hyper_client = HyperClient::builder(TokioExecutor::new()).build(https);
+
+        let redis_client = redis::Client::open("redis://127.0.0.1/").unwrap();
+        let redis_conn = redis_client.get_multiplexed_async_connection().await.unwrap();
+        let redis_manager = crate::RedisManager { conn: redis_conn };
+
+        AppState {
+            tunnels: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            responses: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            jwt_secret: Arc::new("test_secret".to_string()),
+            redis: Arc::new(redis_manager),
+            hyper_client,
+            default_cloud_backend: "http://localhost:8080".to_string(),
+            request_timeout: Duration::from_secs(1),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_proxy_handler_with_tunnel() {
+        let state = mock_app_state().await;
+        let subdomain = "test-subdomain";
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+        // Insert a mock tunnel
+        state.tunnels.write().await.insert(subdomain.to_string(), tx);
+
+        let request = AxumRequest::builder()
+            .uri("/")
+            .header("Host", format!("{}.example.com", subdomain))
+            .body(AxumBody::empty())
+            .unwrap();
+
+        // We expect the handler to forward to the tunnel, which will then wait for a response.
+        // Since we don't send a response in this test, it will time out.
+        // We just want to check that a message was sent to the tunnel.
+        let result = proxy_handler(State(state.clone()), request).await;
+
+        // The handler should return a Gateway Timeout because we don't send a response back
+        assert_eq!(result.unwrap_err(), StatusCode::GATEWAY_TIMEOUT);
+
+        // Check that a message was sent to the tunnel
+        let received = rx.recv().await;
+        assert!(received.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_proxy_handler_no_tunnel() {
+        let state = mock_app_state().await;
+        let subdomain = "unassigned-subdomain";
+
+        let request = AxumRequest::builder()
+            .uri("/")
+            .header("Host", format!("{}.example.com", subdomain))
+            .body(AxumBody::empty())
+            .unwrap();
+
+        // Expect the handler to forward to the cloud, which will fail in a test environment
+        let result = proxy_handler(State(state.clone()), request).await;
+
+        // We expect a 502 Bad Gateway or 504 Gateway Timeout because the cloud backend is not running
+        let status = result.unwrap_err();
+        assert!(status == StatusCode::BAD_GATEWAY || status == StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn test_forward_via_tunnel() {
+        let state = mock_app_state().await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+        let request = AxumRequest::builder()
+            .uri("/test-path")
+            .method("POST")
+            .header("Content-Type", "application/json")
+            .body(AxumBody::from(r#"{"key":"value"}"#))
+            .unwrap();
+
+        let state_clone = state.clone();
+        // Spawn a task to simulate the tunnel client receiving the request and sending a response
+        tokio::spawn(async move {
+            let received = rx.recv().await.unwrap();
+            if let axum::extract::ws::Message::Text(text) = received {
+                let msg: ControlMessage = serde_json::from_str(&text).unwrap();
+                if let ControlMessage::Request { request_id, http } = msg {
+                    assert_eq!(http.method, "POST");
+                    assert_eq!(http.path, "/test-path");
+                    assert_eq!(http.body, r#"{"key":"value"}"#.as_bytes());
+
+                    // Simulate a response
+                    let http_response = HttpResponse {
+                        status: 200,
+                        headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
+                        body: b"response body".to_vec(),
+                    };
+                    
+                    // Get the response sender and send the.
+                    let resp_tx = state_clone.responses.write().await.remove(&request_id).unwrap();
+                    resp_tx.send(http_response).unwrap();
+                }
+            }
+        });
+
+        let result = forward_via_tunnel(request, tx, &state).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("Content-Type").unwrap(), "text/plain");
+        
+        let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body_bytes, "response body");
+    }
 }

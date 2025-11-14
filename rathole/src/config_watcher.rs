@@ -94,7 +94,7 @@ pub struct ConfigWatcherHandle {
 }
 
 impl ConfigWatcherHandle {
-    pub async fn shutdown(mut self, shutdown_tx: broadcast::Sender<bool>) -> Result<()> {
+    pub async fn shutdown(self, shutdown_tx: broadcast::Sender<bool>) -> Result<()> {
         let _ = shutdown_tx.send(true);
         Ok(())
     }

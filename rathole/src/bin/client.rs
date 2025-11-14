@@ -3,21 +3,16 @@ use futures_util::{SinkExt, StreamExt};
 //use hyper::body::{Body, Incoming as HyperBody};
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::Request;
-use reqwest::Method;
-use std::usize;
 //use hyper::{Body, Client, Request};
-use hyper::body::Incoming as HyperBody;
 //use hyper::Body;
 
-use hyper::body::Incoming;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use rathole::protocol::{ControlMessage, HttpResponse};
 use serde_json::json;
-use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tokio_tungstenite::{connect_async, WebSocketStream};
+use tokio_tungstenite::connect_async;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
