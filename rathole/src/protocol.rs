@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::trace;
+use std::time::Instant;
 
 type ProtocolVersion = u8;
 const _PROTO_V0: u8 = 0u8;
@@ -258,6 +259,25 @@ pub struct HttpResponse {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+pub struct HardwareData {
+    pub operating_system: String,
+
+    /*MEMORY*/
+    pub total_memory: u64,
+    pub used_memory: u64,
+
+    pub total_swap: u64,
+    pub used_swap: u64,
+
+    /*CPU*/
+    pub cpu_usage: f32,
+
+    /*TEMPERATURE*/
+    pub avg_temp: f32,
+    pub max_temp: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum ControlMessage {
     Register {
@@ -272,9 +292,8 @@ pub enum ControlMessage {
         request_id: String,
         http: HttpResponse,
     },
-    Health {
-        cpu_usage: f32,
-        latency_ms: u32,
+    HealthUpdate {
+        hardware_data: HardwareData,
+        timestamp: String,
     },
-    Pong,
 }
