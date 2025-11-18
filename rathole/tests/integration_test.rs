@@ -17,8 +17,6 @@ mod common;
 
 const ECHO_SERVER_ADDR: &str = "127.0.0.1:8080";
 const PINGPONG_SERVER_ADDR: &str = "127.0.0.1:8081";
-const ECHO_SERVER_ADDR_EXPOSED: &str = "127.0.0.1:2334";
-const PINGPONG_SERVER_ADDR_EXPOSED: &str = "127.0.0.1:2335";
 const HITTER_NUM: usize = 4;
 
 #[derive(Clone, Copy, Debug)]
@@ -36,8 +34,16 @@ fn init() {
         .try_init();
 }
 
+use lazy_static::lazy_static;
+use tokio::sync::Mutex;
+
+lazy_static! {
+    static ref TEST_MUTEX: Mutex<()> = Mutex::new(());
+}
+
 #[tokio::test]
 async fn tcp() -> Result<()> {
+    let _guard = TEST_MUTEX.lock().await;
     init();
 
     // Spawn a echo server
@@ -54,72 +60,144 @@ async fn tcp() -> Result<()> {
         }
     });
 
-    test("tests/for_tcp/tcp_transport.toml", Type::Tcp).await?;
+    test(
+        "tests/for_tcp/tcp_transport.toml",
+        Type::Tcp,
+        "127.0.0.1:2334",
+        "127.0.0.1:2335",
+    )
+    .await?;
 
     #[cfg(any(
-         // FIXME: Self-signed certificate on macOS nativetls requires manual interference.
-         all(target_os = "macos", feature = "rustls"),
-         // On other OS accept run with either
-         all(not(target_os = "macos"), any(feature = "native-tls", feature = "rustls")),
-     ))]
-    test("tests/for_tcp/tls_transport.toml", Type::Tcp).await?;
+        // FIXME: Self-signed certificate on macOS nativetls requires manual interference.
+        all(target_os = "macos", feature = "rustls"),
+        // On other OS accept run with either
+        all(
+            not(target_os = "macos"),
+            any(feature = "native-tls", feature = "rustls")
+        ),
+    ))]
+    test(
+        "tests/for_tcp/tls_transport.toml",
+        Type::Tcp,
+        "127.0.0.1:2334",
+        "127.0.0.1:2335",
+    )
+    .await?;
 
     #[cfg(feature = "noise")]
-    test("tests/for_tcp/noise_transport.toml", Type::Tcp).await?;
+    test(
+        "tests/for_tcp/noise_transport.toml",
+        Type::Tcp,
+        "127.0.0.1:2334",
+        "127.0.0.1:2335",
+    )
+    .await?;
 
     #[cfg(any(feature = "websocket-native-tls", feature = "websocket-rustls"))]
-    test("tests/for_tcp/websocket_transport.toml", Type::Tcp).await?;
+    test(
+        "tests/for_tcp/websocket_transport.toml",
+        Type::Tcp,
+        "127.0.0.1:2334",
+        "127.0.0.1:2335",
+    )
+    .await?;
 
     #[cfg(not(target_os = "macos"))]
     #[cfg(any(feature = "websocket-native-tls", feature = "websocket-rustls"))]
-    test("tests/for_tcp/websocket_tls_transport.toml", Type::Tcp).await?;
+    test(
+        "tests/for_tcp/websocket_tls_transport.toml",
+        Type::Tcp,
+        "127.0.0.1:2334",
+        "127.0.0.1:2335",
+    )
+    .await?;
 
     Ok(())
 }
 
 #[tokio::test]
 async fn udp() -> Result<()> {
+    let _guard = TEST_MUTEX.lock().await;
     init();
 
     // Spawn a echo server
     tokio::spawn(async move {
-        if let Err(e) = common::udp::echo_server(ECHO_SERVER_ADDR).await {
+        if let Err(e) = common::udp::echo_server("127.0.0.1:8082").await {
             panic!("Failed to run the echo server for testing: {:?}", e);
         }
     });
 
     // Spawn a pingpong server
     tokio::spawn(async move {
-        if let Err(e) = common::udp::pingpong_server(PINGPONG_SERVER_ADDR).await {
+        if let Err(e) = common::udp::pingpong_server("127.0.0.1:8083").await {
             panic!("Failed to run the pingpong server for testing: {:?}", e);
         }
     });
 
-    test("tests/for_udp/tcp_transport.toml", Type::Udp).await?;
+    test(
+        "tests/for_udp/tcp_transport.toml",
+        Type::Udp,
+        "127.0.0.1:2344",
+        "127.0.0.1:2345",
+    )
+    .await?;
 
     #[cfg(any(
-         // FIXME: Self-signed certificate on macOS nativetls requires manual interference.
-         all(target_os = "macos", feature = "rustls"),
-         // On other OS accept run with either
-         all(not(target_os = "macos"), any(feature = "native-tls", feature = "rustls")),
-     ))]
-    test("tests/for_udp/tls_transport.toml", Type::Udp).await?;
+        // FIXME: Self-signed certificate on macOS nativetls requires manual interference.
+        all(target_os = "macos", feature = "rustls"),
+        // On other OS accept run with either
+        all(
+            not(target_os = "macos"),
+            any(feature = "native-tls", feature = "rustls")
+        ),
+    ))]
+    test(
+        "tests/for_udp/tls_transport.toml",
+        Type::Udp,
+        "127.0.0.1:2344",
+        "127.0.0.1:2345",
+    )
+    .await?;
 
     #[cfg(feature = "noise")]
-    test("tests/for_udp/noise_transport.toml", Type::Udp).await?;
+    test(
+        "tests/for_udp/noise_transport.toml",
+        Type::Udp,
+        "127.0.0.1:2344",
+        "127.0.0.1:2345",
+    )
+    .await?;
 
     #[cfg(any(feature = "websocket-native-tls", feature = "websocket-rustls"))]
-    test("tests/for_udp/websocket_transport.toml", Type::Udp).await?;
+    test(
+        "tests/for_udp/websocket_transport.toml",
+        Type::Udp,
+        "127.0.0.1:2344",
+        "127.0.0.1:2345",
+    )
+    .await?;
 
     #[cfg(not(target_os = "macos"))]
     #[cfg(any(feature = "websocket-native-tls", feature = "websocket-rustls"))]
-    test("tests/for_udp/websocket_tls_transport.toml", Type::Udp).await?;
+    test(
+        "tests/for_udp/websocket_tls_transport.toml",
+        Type::Udp,
+        "127.0.0.1:2344",
+        "127.0.0.1:2345",
+    )
+    .await?;
 
     Ok(())
 }
 
 #[instrument]
-async fn test(config_path: &'static str, t: Type) -> Result<()> {
+async fn test(
+    config_path: &'static str,
+    t: Type,
+    echo_addr: &'static str,
+    pingpong_addr: &'static str,
+) -> Result<()> {
     if cfg!(not(all(feature = "client", feature = "server"))) {
         // Skip the test if the client or the server is not enabled
         return Ok(());
@@ -130,64 +208,69 @@ async fn test(config_path: &'static str, t: Type) -> Result<()> {
 
     // Start the client
     info!("start the client");
+    let client_shutdown_tx_clone = client_shutdown_tx.clone();
     let client = tokio::spawn(async move {
-        run_rathole_client(config_path, client_shutdown_rx)
+        run_rathole_client(config_path, client_shutdown_rx, client_shutdown_tx_clone)
             .await
             .unwrap();
     });
+    info!("client started");
 
     // Sleep for 1 second. Expect the client keep retrying to reach the server
     time::sleep(Duration::from_secs(1)).await;
 
     // Start the server
     info!("start the server");
+    let server_shutdown_tx_clone = server_shutdown_tx.clone();
     let server = tokio::spawn(async move {
-        run_rathole_server(config_path, server_shutdown_rx)
+        run_rathole_server(config_path, server_shutdown_rx, server_shutdown_tx_clone)
             .await
             .unwrap();
     });
-    time::sleep(Duration::from_millis(2500)).await; // Wait for the client to retry
+    time::sleep(Duration::from_secs(5)).await; // Wait for the client to retry
 
     info!("echo");
-    echo_hitter(ECHO_SERVER_ADDR_EXPOSED, t).await.unwrap();
+    echo_hitter(echo_addr, t).await.unwrap();
     info!("pingpong");
-    pingpong_hitter(PINGPONG_SERVER_ADDR_EXPOSED, t)
-        .await
-        .unwrap();
+    pingpong_hitter(pingpong_addr, t).await.unwrap();
 
     // Simulate the client crash and restart
     info!("shutdown the client");
     client_shutdown_tx.send(true)?;
     let _ = tokio::join!(client);
+    info!("client shutdown");
 
     info!("restart the client");
     let client_shutdown_rx = client_shutdown_tx.subscribe();
+    let client_shutdown_tx_clone = client_shutdown_tx.clone();
     let client = tokio::spawn(async move {
-        run_rathole_client(config_path, client_shutdown_rx)
+        run_rathole_client(config_path, client_shutdown_rx, client_shutdown_tx_clone)
             .await
             .unwrap();
     });
+    info!("client restarted");
     time::sleep(Duration::from_secs(1)).await; // Wait for the client to start
 
     info!("echo");
-    echo_hitter(ECHO_SERVER_ADDR_EXPOSED, t).await.unwrap();
+    echo_hitter(echo_addr, t).await.unwrap();
     info!("pingpong");
-    pingpong_hitter(PINGPONG_SERVER_ADDR_EXPOSED, t)
-        .await
-        .unwrap();
+    pingpong_hitter(pingpong_addr, t).await.unwrap();
 
     // Simulate the server crash and restart
     info!("shutdown the server");
     server_shutdown_tx.send(true)?;
     let _ = tokio::join!(server);
+    info!("server shutdown");
 
     info!("restart the server");
     let server_shutdown_rx = server_shutdown_tx.subscribe();
+    let server_shutdown_tx_clone = server_shutdown_tx.clone();
     let server = tokio::spawn(async move {
-        run_rathole_server(config_path, server_shutdown_rx)
+        run_rathole_server(config_path, server_shutdown_rx, server_shutdown_tx_clone)
             .await
             .unwrap();
     });
+    info!("server restarted");
     time::sleep(Duration::from_millis(2500)).await; // Wait for the client to retry
 
     // Simulate heavy load
@@ -197,13 +280,11 @@ async fn test(config_path: &'static str, t: Type) -> Result<()> {
 
     for _ in 0..HITTER_NUM / 2 {
         v.push(tokio::spawn(async move {
-            echo_hitter(ECHO_SERVER_ADDR_EXPOSED, t).await.unwrap();
+            echo_hitter(echo_addr, t).await.unwrap();
         }));
 
         v.push(tokio::spawn(async move {
-            pingpong_hitter(PINGPONG_SERVER_ADDR_EXPOSED, t)
-                .await
-                .unwrap();
+            pingpong_hitter(pingpong_addr, t).await.unwrap();
         }));
     }
 

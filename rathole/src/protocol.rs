@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::trace;
-use std::time::Instant;
 
 type ProtocolVersion = u8;
 const _PROTO_V0: u8 = 0u8;

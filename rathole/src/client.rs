@@ -468,8 +468,34 @@ impl<T: 'static + Transport> ControlChannel<T> {
             service: self.service.clone(),
         });
 
+        let mut health_interval = tokio::time::interval(Duration::from_secs(10));
+
         loop {
             tokio::select! {
+                _ = health_interval.tick() => {
+                    let dummy_hardware_data = crate::protocol::HardwareData {
+                        operating_system: "Linux".to_string(),
+                        total_memory: 8 * 1024 * 1024 * 1024, // 8GB
+                        used_memory: 4 * 1024 * 1024 * 1024,  // 4GB
+                        total_swap: 2 * 1024 * 1024 * 1024,   // 2GB
+                        used_swap: 1 * 1024 * 1024 * 1024,    // 1GB
+                        cpu_usage: 0.5, // 50%
+                        avg_temp: 45.0,
+                        max_temp: 60.0,
+                    };
+
+                    let health_msg = crate::protocol::ControlMessage::HealthUpdate {
+                        hardware_data: dummy_hardware_data,
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                    };
+
+                    if let Err(e) = self.transport.send_control_message(&mut conn, health_msg).await {
+
+                        println!("Failed to send health update: {}", e);
+                        break;
+                    }
+                    println!("Client: Sent health update.");
+                }
                 val = read_control_cmd(&mut conn) => {
                     let val = val?;
                     debug!( "Received {:?}", val);

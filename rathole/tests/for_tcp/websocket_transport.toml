@@ -15,6 +15,7 @@ local_addr = "127.0.0.1:8081"
 [server]
 bind_addr = "0.0.0.0:2333" 
 default_token = "default_token_if_not_specify" 
+jwt_secret = "a_very_secret_key"
 
 [server.transport]
 type = "websocket" 

@@ -14,14 +14,14 @@ use hyper_util::rt::TokioExecutor;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use rathole::error::AppError;
 use rathole::protocol::{ControlMessage, HttpRequest, HttpResponse};
-use rathole::proxy::{proxy_handler, AppState};
-use rathole::RedisManager;
+use rathole::proxy::{proxy_handler, AppState, HealthStatus, TunnelHealth, TunnelHealthMap};
+use rathole::{login, Claims, LoginPayload, RedisManager};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::{mpsc, oneshot, RwLock};
@@ -44,38 +44,7 @@ struct AppState {
     redis: Arc<RedisManager>,
 }*/
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Claims {
-    sub: String,
-    exp: usize,
-}
 
-#[derive(Debug, Deserialize)]
-struct LoginPayload {
-    username: String,
-    password: String,
-}
-
-async fn login(
-    State(state): State<AppState>,
-    Json(payload): Json<LoginPayload>,
-) -> Result<impl IntoResponse, AppError> {
-    if payload.username == "test" && payload.password == "test" {
-        let my_claims = Claims {
-            sub: "test".to_owned(),
-            exp: (Utc::now() + Duration::days(1)).timestamp() as usize,
-        };
-        let token = encode(
-            &Header::default(),
-            &my_claims,
-            &EncodingKey::from_secret(state.jwt_secret.as_bytes()),
-        )
-        .map_err(AppError::JwtError)?;
-        Ok((StatusCode::OK, token))
-    } else {
-        Err(AppError::InvalidCredentials)
-    }
-}
 
 async fn register(
     Path(id): Path<String>,
@@ -145,16 +114,36 @@ async fn handle_socket(
                             // Handle messages from client → tunnel handler
                             res = async { timeout(StdDuration::from_secs(30), socket.recv()).await } => {
                                 match res {
-                                    // Received message successfully
-                                    Ok(Some(Ok(Message::Text(text)))) => {
-                                        println!("Received message from {id}: {}", text);
-                                        // handle message normally
-                                    }
-
-                                    // Client closed, timeout, or error
-                                    Ok(Some(Err(e))) => {
-                                        println!("Error from {id}: {}", e);
-                                        break;
+                                                                         // Received message successfully
+                                                                        Ok(Some(Ok(Message::Text(text)))) => {
+                                                                            let msg: ControlMessage = match serde_json::from_str(&text) {
+                                                                                Ok(msg) => msg,
+                                                                                Err(err) => {
+                                                                                    println!("Failed to parse message: {}", err);
+                                                                                    continue;
+                                                                                }
+                                                                            };
+                                    
+                                                                            if let ControlMessage::HealthUpdate { hardware_data, .. } = msg {
+                                                                                let status = if hardware_data.cpu_usage > 0.8 {
+                                                                                    HealthStatus::Critical
+                                                                                } else if hardware_data.cpu_usage > 0.6 {
+                                                                                    HealthStatus::Warning
+                                                                                } else {
+                                                                                    HealthStatus::Normal
+                                                                                };
+                                    
+                                                                                let mut health_data = state.health_data.write().await;
+                                                                                health_data.insert(id.clone(), TunnelHealth {
+                                                                                    status,
+                                                                                    last_update: Instant::now(),
+                                                                                });
+                                                                            }
+                                                                        }
+                                    
+                                                                        // Client closed, timeout, or error
+                                                                        Ok(Some(Err(e))) => {
+                                                                            println!("Error from {id}: {}", e);                                        break;
                                     }
                                     Ok(None) => {
                                         println!("Client {id} disconnected.");
@@ -309,6 +298,7 @@ async fn main() -> Result<(), AppError> {
         hyper_client,
         default_cloud_backend: "localhost:4000".to_string(),
         request_timeout: StdDuration::from_secs(1000),
+        health_data: TunnelHealthMap::default(),
     };
 
     let state_clone = state.clone();

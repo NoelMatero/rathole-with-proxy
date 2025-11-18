@@ -1,15 +1,13 @@
-use crate::{
-    config::{TcpConfig, TransportConfig},
-    helper::tcp_connect_with_proxy,
-};
-
-use super::{AddrMaybeCached, SocketOpts, Transport};
+use crate::config::{TcpConfig, TransportConfig};
+use crate::helper::tcp_connect_with_proxy;
+use crate::transport::{AddrMaybeCached, SocketOpts, Transport};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::net::SocketAddr;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TcpTransport {
     socket_opts: SocketOpts,
     cfg: TcpConfig,
@@ -50,5 +48,16 @@ impl Transport for TcpTransport {
         let s = tcp_connect_with_proxy(addr, self.cfg.proxy.as_ref()).await?;
         self.socket_opts.apply(&s);
         Ok(s)
+    }
+
+    async fn send_control_message(
+        &self,
+        stream: &mut Self::Stream,
+        message: crate::protocol::ControlMessage,
+    ) -> Result<()> {
+        let msg_str = serde_json::to_string(&message)?;
+        stream.write_all(msg_str.as_bytes()).await?;
+        stream.flush().await?;
+        Ok(())
     }
 }

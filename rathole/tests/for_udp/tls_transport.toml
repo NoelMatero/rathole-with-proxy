@@ -10,14 +10,15 @@ hostname = "localhost"
 
 [client.services.echo] 
 type = "udp"
-local_addr = "127.0.0.1:8080" 
+local_addr = "127.0.0.1:8082" 
 [client.services.pingpong] 
 type = "udp"
-local_addr = "127.0.0.1:8081" 
+local_addr = "127.0.0.1:8083" 
 
 [server]
 bind_addr = "0.0.0.0:2332" 
 default_token = "default_token_if_not_specify" 
+jwt_secret = "a_very_secret_key"
 
 [server.transport]
 type = "tls" 
@@ -27,7 +28,7 @@ pkcs12_password = "1234"
 
 [server.services.echo] 
 type = "udp"
-bind_addr = "0.0.0.0:2334" 
+bind_addr = "0.0.0.0:2344" 
 [server.services.pingpong] 
 type = "udp"
-bind_addr = "0.0.0.0:2335" 
+bind_addr = "0.0.0.0:2345" 

@@ -65,6 +65,11 @@ pub trait Transport: Debug + Send + Sync {
     async fn accept(&self, a: &Self::Acceptor) -> Result<(Self::RawStream, SocketAddr)>;
     async fn handshake(&self, conn: Self::RawStream) -> Result<Self::Stream>;
     async fn connect(&self, addr: &AddrMaybeCached) -> Result<Self::Stream>;
+    async fn send_control_message(
+        &self,
+        stream: &mut Self::Stream,
+        message: crate::protocol::ControlMessage,
+    ) -> Result<()>;
 }
 
 mod tcp;

@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use std::fs;
 use std::net::SocketAddr;
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio_native_tls::native_tls::{self, Certificate, Identity};
 pub(crate) use tokio_native_tls::TlsStream;
@@ -107,6 +108,17 @@ impl Transport for TlsTransport {
                 conn,
             )
             .await?)
+    }
+
+    async fn send_control_message(
+        &self,
+        stream: &mut Self::Stream,
+        message: crate::protocol::ControlMessage,
+    ) -> Result<()> {
+        let msg_str = serde_json::to_string(&message)?;
+        stream.write_all(msg_str.as_bytes()).await?;
+        stream.flush().await?;
+        Ok(())
     }
 }
 

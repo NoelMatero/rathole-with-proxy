@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_core::stream::Stream;
 use futures_sink::Sink;
+use futures_util::SinkExt;
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 
@@ -170,6 +171,17 @@ impl AsyncWrite for WebsocketTunnel {
     }
 }
 
+impl WebsocketTunnel {
+    pub async fn send_text(&mut self, text: String) -> Result<(), Error> {
+        self.inner
+            .get_mut()
+            .inner
+            .send(Message::Text(text.into()))
+            .await
+            .map_err(|e| Error::new(ErrorKind::Other, e))
+    }
+}
+
 #[derive(Debug)]
 enum SubTransport {
     Secure(TlsTransport),
@@ -252,5 +264,17 @@ impl Transport for WebsocketTransport {
             inner: StreamReader::new(StreamWrapper { inner: wsstream }),
         };
         Ok(tun)
+    }
+
+    async fn send_control_message(
+        &self,
+        stream: &mut Self::Stream,
+        message: crate::protocol::ControlMessage,
+    ) -> anyhow::Result<()> {
+        let msg_str = serde_json::to_string(&message)?;
+        stream
+            .send_text(msg_str)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
     }
 }

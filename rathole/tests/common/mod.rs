@@ -13,6 +13,7 @@ pub const PONG: &str = "pong";
 pub async fn run_rathole_server(
     config_path: &str,
     shutdown_rx: broadcast::Receiver<bool>,
+    shutdown_tx: broadcast::Sender<bool>,
 ) -> Result<()> {
     let cli = rathole::Cli {
         config_path: Some(PathBuf::from(config_path)),
@@ -20,12 +21,14 @@ pub async fn run_rathole_server(
         client: false,
         ..Default::default()
     };
-    rathole::run(cli, shutdown_rx).await
+    let (_update_tx, mut update_rx) = tokio::sync::mpsc::channel(1);
+    rathole::run(cli, shutdown_rx, shutdown_tx, &mut update_rx).await
 }
 
 pub async fn run_rathole_client(
     config_path: &str,
     shutdown_rx: broadcast::Receiver<bool>,
+    shutdown_tx: broadcast::Sender<bool>,
 ) -> Result<()> {
     let cli = rathole::Cli {
         config_path: Some(PathBuf::from(config_path)),
@@ -33,7 +36,8 @@ pub async fn run_rathole_client(
         client: true,
         ..Default::default()
     };
-    rathole::run(cli, shutdown_rx).await
+    let (_update_tx, mut update_rx) = tokio::sync::mpsc::channel(1);
+    rathole::run(cli, shutdown_rx, shutdown_tx, &mut update_rx).await
 }
 
 pub mod tcp {
@@ -81,7 +85,7 @@ pub mod tcp {
 }
 
 pub mod udp {
-    use rathole::UDP_BUFFER_SIZE;
+    use rathole::constants::UDP_BUFFER_SIZE;
     use tokio::net::UdpSocket;
     use tracing::debug;
 

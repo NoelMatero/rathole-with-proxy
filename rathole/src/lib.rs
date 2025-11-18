@@ -2,7 +2,7 @@ mod cli;
 mod client;
 mod config;
 mod config_watcher;
-mod constants;
+pub mod constants;
 mod helper;
 mod server;
 mod transport;
@@ -22,8 +22,12 @@ use crate::config_watcher::ConfigChange;
 use anyhow::Result;
 use tokio::sync::{broadcast, mpsc};
 
+use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use chrono::{Duration, Utc};
+use jsonwebtoken::{encode, EncodingKey, Header};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 pub struct RedisManager {
@@ -95,9 +99,9 @@ pub async fn run(
     )
     .await?;
 
-    if config.server.is_some() {
+    if args.server {
         run_server(config, &mut shutdown_rx, update_rx).await?;
-    } else if config.client.is_some() {
+    } else if args.client {
         loop {
             let mut client_shutdown_rx = shutdown_rx.resubscribe();
 
@@ -115,4 +119,37 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Claims {
+    pub sub: String,
+    pub exp: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoginPayload {
+    pub username: String,
+    pub password: String,
+}
+
+pub async fn login(
+    State(state): State<proxy::AppState>,
+    Json(payload): Json<LoginPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    if payload.username == "test" && payload.password == "test" {
+        let my_claims = Claims {
+            sub: "test".to_owned(),
+            exp: (Utc::now() + Duration::days(1)).timestamp() as usize,
+        };
+        let token = encode(
+            &Header::default(),
+            &my_claims,
+            &EncodingKey::from_secret(state.jwt_secret.as_bytes()),
+        )
+        .map_err(AppError::JwtError)?;
+        Ok((StatusCode::OK, token))
+    } else {
+        Err(AppError::InvalidCredentials)
+    }
 }

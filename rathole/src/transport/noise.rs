@@ -5,6 +5,7 @@ use crate::config::{NoiseConfig, TransportConfig};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use snowstorm::{Builder, NoiseParams, NoiseStream};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 
 pub struct NoiseTransport {
@@ -103,5 +104,16 @@ impl Transport for NoiseTransport {
             .await
             .with_context(|| "Failed to do noise handshake")?;
         return Ok(conn);
+    }
+
+    async fn send_control_message(
+        &self,
+        stream: &mut Self::Stream,
+        message: crate::protocol::ControlMessage,
+    ) -> Result<()> {
+        let msg_str = serde_json::to_string(&message)?;
+        stream.write_all(msg_str.as_bytes()).await?;
+        stream.flush().await?;
+        Ok(())
     }
 }

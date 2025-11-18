@@ -15,11 +15,26 @@ use http_body_util::BodyExt;
 use hyper_util::client::legacy::connect::HttpConnector;
 use serde_json;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::usize;
 use tokio::sync::{oneshot, RwLock};
 use tokio::time::timeout;
 use tracing::debug;
+
+pub type TunnelHealthMap = Arc<RwLock<std::collections::HashMap<String, TunnelHealth>>>;
+
+#[derive(Clone, Debug)]
+pub enum HealthStatus {
+    Normal,
+    Warning,
+    Critical,
+}
+
+#[derive(Clone, Debug)]
+pub struct TunnelHealth {
+    pub status: HealthStatus,
+    pub last_update: Instant,
+}
 
 /// Extend your AppState to include a shared hyper client and a request timeout.
 /// You already have tunnels/responses/redis/jwt_secret; add these fields.
@@ -39,6 +54,7 @@ pub struct AppState {
     pub hyper_client: HyperClient<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>,
     pub default_cloud_backend: String, // e.g. "https://myapp-cloud.example.com"
     pub request_timeout: Duration,     // e.g. Duration::from_secs(10)
+    pub health_data: TunnelHealthMap,
 }
 
 /// Main handler to be used as the proxy forwarder.
@@ -269,6 +285,7 @@ mod tests {
             hyper_client,
             default_cloud_backend: "http://localhost:8080".to_string(),
             request_timeout: Duration::from_secs(1),
+            health_data: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 
