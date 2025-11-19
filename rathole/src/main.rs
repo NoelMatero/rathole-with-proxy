@@ -272,7 +272,8 @@ async fn main() -> Result<(), AppError> {
 
     println!("works");
 
-    let jwt_secret = Arc::new(config.server.unwrap().jwt_secret.to_string());
+    let server_config = config.server.unwrap();
+    let jwt_secret = Arc::new(server_config.jwt_secret.to_string());
 
     let redis_client =
         redis::Client::open("redis://127.0.0.1/").map_err(|e| AppError::Other(e.into()))?;
@@ -308,7 +309,7 @@ async fn main() -> Result<(), AppError> {
         jwt_secret,
         redis: redis_manager,
         hyper_client,
-        default_cloud_backend: "localhost:4000".to_string(),
+        default_cloud_backend: server_config.default_cloud_backend.unwrap_or_else(|| "http://localhost:4000".to_string()),
         request_timeout: StdDuration::from_secs(1000),
         health_data: TunnelHealthMap::default(),
     };

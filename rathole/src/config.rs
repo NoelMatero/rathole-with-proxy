@@ -225,6 +225,7 @@ pub struct ServerConfig {
     pub bind_addr: String,
     pub default_token: Option<MaskedString>,
     pub jwt_secret: MaskedString,
+    pub default_cloud_backend: Option<String>,
     pub services: HashMap<String, ServerServiceConfig>,
     #[serde(default)]
     pub transport: TransportConfig,
@@ -238,6 +239,7 @@ impl Default for ServerConfig {
             bind_addr: "".to_string(),
             default_token: None,
             jwt_secret: "secret".into(),
+            default_cloud_backend: None,
             services: HashMap::new(),
             transport: TransportConfig::default(),
             heartbeat_interval: default_heartbeat_interval(),

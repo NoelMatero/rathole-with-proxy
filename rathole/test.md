@@ -26,8 +26,9 @@ Ensure your `config.toml` and `client.toml` files are correctly configured as fo
 ```toml
 [server]
 bind_addr = "127.0.0.1:3000"
-jwt_secret = "your-super-secret-and-long-jwt-secret" # Use a strong secret in production
-default_cloud_backend = "http://127.0.0.1:4000" # Our mock cloud backend
+jwt_secret = "your-super-secret-and-long-jwt-secret"
+# IMPORTANT: Ensure this URL includes the "http://" or "https://" scheme.
+default_cloud_backend = "http://127.0.0.1:4000"
 ```
 
 **`client.toml` (for the `rathole-client`):**
