@@ -217,6 +217,7 @@ impl<T: 'static + Transport> Server<T> {
             }
         }
 
+        *self.control_channels.write().await = MultiMap::new();
         info!("Shutdown");
 
         Ok(())

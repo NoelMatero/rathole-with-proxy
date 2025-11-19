@@ -124,20 +124,32 @@ async fn handle_socket(
                                                                                 }
                                                                             };
                                     
-                                                                            if let ControlMessage::HealthUpdate { hardware_data, .. } = msg {
-                                                                                let status = if hardware_data.cpu_usage > 0.8 {
-                                                                                    HealthStatus::Critical
-                                                                                } else if hardware_data.cpu_usage > 0.6 {
-                                                                                    HealthStatus::Warning
-                                                                                } else {
-                                                                                    HealthStatus::Normal
-                                                                                };
-                                    
-                                                                                let mut health_data = state.health_data.write().await;
-                                                                                health_data.insert(id.clone(), TunnelHealth {
-                                                                                    status,
-                                                                                    last_update: Instant::now(),
-                                                                                });
+                                                                            match msg {
+                                                                                ControlMessage::HealthUpdate { hardware_data, .. } => {
+                                                                                    println!("Received health update with CPU usage: {}%", hardware_data.cpu_usage * 100.0);
+                                                                                    let status = if hardware_data.cpu_usage > 0.8 {
+                                                                                        HealthStatus::Critical
+                                                                                    } else if hardware_data.cpu_usage > 0.6 {
+                                                                                        HealthStatus::Warning
+                                                                                    } else {
+                                                                                        HealthStatus::Normal
+                                                                                    };
+                                        
+                                                                                    let mut health_data = state.health_data.write().await;
+                                                                                    health_data.insert(id.clone(), TunnelHealth {
+                                                                                        status,
+                                                                                        last_update: Instant::now(),
+                                                                                    });
+                                                                                },
+                                                                                ControlMessage::Response { request_id, http } => {
+                                                                                    if let Some(tx) = state.responses.write().await.remove(&request_id) {
+                                                                                        if tx.send(http).is_err() {
+                                                                                            println!("Failed to send response for request {}: receiver dropped.", request_id);
+                                                                                        }
+                                                                                    }
+                                                                                },
+                                                                                // Other message types are ignored by the server
+                                                                                _ => {}
                                                                             }
                                                                         }
                                     

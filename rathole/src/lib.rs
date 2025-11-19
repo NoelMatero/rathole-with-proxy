@@ -102,16 +102,7 @@ pub async fn run(
     if args.server {
         run_server(config, &mut shutdown_rx, update_rx).await?;
     } else if args.client {
-        loop {
-            let mut client_shutdown_rx = shutdown_rx.resubscribe();
-
-            tokio::select! {
-                _ = run_client(config.clone(), &mut client_shutdown_rx, update_rx) => {},
-                _ = shutdown_rx.recv() => {
-                    break;
-                }
-            }
-        }
+        run_client(config, &mut shutdown_rx, update_rx).await?;
     }
 
     if watcher.is_some() {

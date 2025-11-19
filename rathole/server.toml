@@ -1,9 +1,9 @@
 [server]
-bind_addr = "0.0.0.0:2333" 
-default_token = "default_token_if_not_specify" 
+bind_addr = "0.0.0.0:4000"
+default_token = "default_token_if_not_specify"
 
 [server.transport]
-type = "tcp" 
+type = "tcp"
 
-[server.services.echo] 
-bind_addr = "0.0.0.0:2334" 
+[server.services.echo]
+bind_addr = "0.0.0.0:2334"

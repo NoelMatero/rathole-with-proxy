@@ -62,11 +62,10 @@ pub async fn proxy_handler(
     State(state): State<AppState>,
     axum_req: AxumRequest<AxumBody>,
 ) -> Result<AxumResponse<AxumBody>, StatusCode> {
-    println!("req: {:?}", axum_req);
     // 1) resolve subdomain from Host header
     let host = axum_req
         .headers()
-        .get("host")
+        .get(header::HOST)
         .and_then(|h| h.to_str().ok())
         .unwrap_or_default()
         .to_string();
@@ -77,16 +76,42 @@ pub async fn proxy_handler(
         host, subdomain
     );
 
-    // 2) If tunnel exists, forward through tunnel
-    if let Some(tunnel_tx) = {
-        let read = state.tunnels.read().await;
-        read.get(&subdomain).cloned()
-    } {
-        return forward_via_tunnel(axum_req, tunnel_tx, &state).await;
+    // --- Sticky Session Logic ---
+    let cookies = axum_req.headers().get(header::COOKIE).and_then(|h| h.to_str().ok()).unwrap_or("");
+    let backend_cookie = cookies.split(';').find(|c| c.trim().starts_with("backend="));
+
+    if let Some(cookie) = backend_cookie {
+        if cookie.contains("cloud") {
+            // Forward to cloud and keep the cookie
+            return forward_to_cloud(axum_req, &state, true).await;
+        }
+        // If backend=local, we continue with the health check logic
     }
 
-    // 3) Otherwise forward to cloud backend
-    forward_to_cloud(axum_req, &state).await
+    // --- Connection Draining & Health Check Logic ---
+    let is_tunnel_healthy = {
+        let health_data = state.health_data.read().await;
+        if let Some(health) = health_data.get(&subdomain) {
+            // Healthy if status is not Critical and last update was within 30 seconds
+            !matches!(health.status, HealthStatus::Critical) && health.last_update.elapsed() < Duration::from_secs(30)
+        } else {
+            true // No health data yet, assume healthy
+        }
+    };
+
+    let tunnel_exists = state.tunnels.read().await.get(&subdomain).is_some();
+
+    if is_tunnel_healthy && tunnel_exists {
+        if let Some(tunnel_tx) = state.tunnels.read().await.get(&subdomain).cloned() {
+            // Forward to local and set backend=local cookie
+            let mut response = forward_via_tunnel(axum_req, tunnel_tx, &state).await?;
+            response.headers_mut().insert(header::SET_COOKIE, header::HeaderValue::from_static("backend=local; Path=/"));
+            return Ok(response);
+        }
+    }
+
+    // If tunnel is not healthy, doesn't exist, or sticky session is for cloud
+    forward_to_cloud(axum_req, &state, false).await
 }
 
 /// Build ControlMessage::Request and use the oneshot pattern over the tunnel.
@@ -180,6 +205,7 @@ async fn forward_via_tunnel(
 async fn forward_to_cloud(
     req: AxumRequest<AxumBody>,
     state: &AppState,
+    is_sticky: bool,
 ) -> Result<AxumResponse<AxumBody>, StatusCode> {
     // Convert axum body -> hyper body by extracting bytes
     let (mut parts, body) = req.into_parts();
@@ -217,7 +243,12 @@ async fn forward_to_cloud(
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
                 .to_bytes();
-            let axum_resp = AxumResponse::from_parts(parts, AxumBody::from(bytes));
+            let mut axum_resp = AxumResponse::from_parts(parts, AxumBody::from(bytes));
+
+            if !is_sticky {
+                axum_resp.headers_mut().insert(header::SET_COOKIE, header::HeaderValue::from_static("backend=cloud; Path=/"));
+            }
+            
             Ok(axum_resp)
         }
         Ok(Err(e)) => {

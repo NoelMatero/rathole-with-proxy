@@ -1,9 +1,10 @@
 [client]
-remote_addr = "127.0.0.1:2333" 
-default_token = "default_token_if_not_specify" 
+remote_addr = "127.0.0.1:3000"
+default_token = "default_token_if_not_specify"
 
 [client.transport]
-type = "tcp" 
+type = "tcp"
 
-[client.services.echo] 
-local_addr = "127.0.0.1:8080" 
+[client.services.test]
+token = "some_auth_token"     # This token will be used for JWT authentication
+local_addr = "127.0.0.1:8000"
