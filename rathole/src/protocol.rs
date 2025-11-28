@@ -242,7 +242,7 @@ pub async fn read_data_cmd<T: AsyncRead + AsyncWrite + Unpin>(
     bincode::deserialize(&bytes).with_context(|| "Failed to deserialize data cmd")
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HttpRequest {
     pub method: String,
     pub path: String,
@@ -250,21 +250,29 @@ pub struct HttpRequest {
     pub body: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HttpResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TemperaturesData {
+    pub avg_temp: Option<f32>,
+    pub max_temp: Option<f32>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HardwareData {
     pub operating_system: String,
 
     /*MEMORY*/
+    pub avg_memory_usage: f32,
     pub total_memory: u64,
     pub used_memory: u64,
 
+    pub avg_swap_usage: f32,
     pub total_swap: u64,
     pub used_swap: u64,
 
@@ -272,11 +280,12 @@ pub struct HardwareData {
     pub cpu_usage: f32,
 
     /*TEMPERATURE*/
-    pub avg_temp: f32,
-    pub max_temp: f32,
+    //pub temp: f32,
+    pub temperatures_data: TemperaturesData,
+    pub timestamp: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 pub enum ControlMessage {
     Register {

@@ -1,6 +1,7 @@
 [server]
 bind_addr = "0.0.0.0:4000"
 default_token = "default_token_if_not_specify"
+default_cloud_backend = "http://127.0.0.1:4000"
 
 [server.transport]
 type = "tcp"

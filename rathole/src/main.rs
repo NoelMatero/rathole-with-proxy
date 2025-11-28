@@ -13,6 +13,7 @@ use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::rt::TokioExecutor;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use rathole::error::AppError;
+use rathole::hardware::handle_hardware_data;
 use rathole::protocol::{ControlMessage, HttpRequest, HttpResponse};
 use rathole::proxy::{proxy_handler, AppState, HealthStatus, TunnelHealth, TunnelHealthMap};
 use rathole::{login, Claims, LoginPayload, RedisManager};
@@ -43,8 +44,6 @@ struct AppState {
     jwt_secret: Arc<String>,
     redis: Arc<RedisManager>,
 }*/
-
-
 
 async fn register(
     Path(id): Path<String>,
@@ -123,23 +122,27 @@ async fn handle_socket(
                                                                                     continue;
                                                                                 }
                                                                             };
-                                    
+
                                                                             match msg {
                                                                                 ControlMessage::HealthUpdate { hardware_data, .. } => {
-                                                                                    println!("Received health update with CPU usage: {}%", hardware_data.cpu_usage * 100.0);
-                                                                                    let status = if hardware_data.cpu_usage > 0.8 {
+                                                                                  //match
+                                                                                    let cpu_limit = 85.0;
+                                                                                    let status = handle_hardware_data(hardware_data.clone(), cpu_limit).await;
+                                                                                    println!("Received health update with status: {:?}%", status.clone());
+                                                                                    /*let status = if hardware_data.cpu_usage > 0.8 {
                                                                                         HealthStatus::Critical
                                                                                     } else if hardware_data.cpu_usage > 0.6 {
                                                                                         HealthStatus::Warning
                                                                                     } else {
                                                                                         HealthStatus::Normal
-                                                                                    };
-                                        
+                                                                                    };*/
+
                                                                                     let mut health_data = state.health_data.write().await;
-                                                                                    health_data.insert(id.clone(), TunnelHealth {
-                                                                                        status,
-                                                                                        last_update: Instant::now(),
-                                                                                    });
+                                                                                    let entry = health_data.entry(id.clone()).or_insert_with(TunnelHealth::default);
+                                                                                    entry.status = status.clone();
+                                                                                    entry.last_update = Instant::now();
+
+                                                                                println!("Updated health for {} => {:?}", id, health_data.get(&id));
                                                                                 },
                                                                                 ControlMessage::Response { request_id, http } => {
                                                                                     if let Some(tx) = state.responses.write().await.remove(&request_id) {
@@ -152,7 +155,7 @@ async fn handle_socket(
                                                                                 _ => {}
                                                                             }
                                                                         }
-                                    
+
                                                                         // Client closed, timeout, or error
                                                                         Ok(Some(Err(e))) => {
                                                                             println!("Error from {id}: {}", e);                                        break;
@@ -309,7 +312,9 @@ async fn main() -> Result<(), AppError> {
         jwt_secret,
         redis: redis_manager,
         hyper_client,
-        default_cloud_backend: server_config.default_cloud_backend.unwrap_or_else(|| "http://localhost:4000".to_string()),
+        default_cloud_backend: server_config
+            .default_cloud_backend
+            .unwrap_or_else(|| "http://localhost:4000".to_string()),
         request_timeout: StdDuration::from_secs(1000),
         health_data: TunnelHealthMap::default(),
     };

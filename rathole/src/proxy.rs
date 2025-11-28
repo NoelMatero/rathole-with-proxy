@@ -1,14 +1,12 @@
 use crate::protocol::{ControlMessage, HttpRequest, HttpResponse};
 use axum::body::{to_bytes, Body as AxumBody};
 use axum::extract::State;
-use axum::http::{
-    header, HeaderMap, Request as AxumRequest, Response as AxumResponse, StatusCode,
-};
+use axum::http::{header, HeaderMap, Request as AxumRequest, Response as AxumResponse, StatusCode};
 //use hyper::body::Body as HyperBody;
 //use hyper::body::Incoming as HyperBody;
 use bytes::Bytes;
 use http_body_util::Full;
- // for trait methods like .collect()
+// for trait methods like .collect()
 use hyper_util::client::legacy::Client as HyperClient;
 //use hyper_util::HttpsConnectorBuilder;
 use http_body_util::BodyExt;
@@ -21,8 +19,6 @@ use tokio::sync::{oneshot, RwLock};
 use tokio::time::timeout;
 use tracing::debug;
 
-pub type TunnelHealthMap = Arc<RwLock<std::collections::HashMap<String, TunnelHealth>>>;
-
 #[derive(Clone, Debug)]
 pub enum HealthStatus {
     Normal,
@@ -33,7 +29,69 @@ pub enum HealthStatus {
 #[derive(Clone, Debug)]
 pub struct TunnelHealth {
     pub status: HealthStatus,
-    pub last_update: Instant,
+    pub last_update: Instant, // last time any health info / success recorded
+    pub last_success: Option<Instant>, // last time a proxied request succeeded
+    pub last_failure: Option<Instant>, // last time a proxied request failed (timeout/error)
+    pub consecutive_successes: u32,
+    pub consecutive_failures: u32,
+    pub avg_latency_ms: Option<f64>, // rolling latency estimate (ms)
+    pub error_rate: f64,             // rolling error rate 0.0..1.0
+    pub last_transition: Instant,    // last time status changed (for hysteresis)
+}
+
+impl Default for TunnelHealth {
+    fn default() -> Self {
+        let now = Instant::now();
+        TunnelHealth {
+            status: HealthStatus::Normal,
+            last_update: now,
+            last_success: None,
+            last_failure: None,
+            consecutive_successes: 0,
+            consecutive_failures: 0,
+            avg_latency_ms: None,
+            error_rate: 0.0,
+            last_transition: now,
+        }
+    }
+}
+
+/// Routing decision
+#[derive(Debug, PartialEq, Eq)]
+enum RoutingDecision {
+    RouteLocal,
+    HybridSticky, // prefer cloud, but if cookie says local keep it
+    ForceCloud,
+    RouteCloud,
+}
+
+const STALE_THRESHOLD: Duration = Duration::from_secs(30); // if last_update older than this, treat stale
+const WARNING_TO_CRITICAL_FAILURES: u32 = 5; // how many consecutive failures push status -> Critical
+const SUCCESS_TO_NORMAL: u32 = 3; // successes required to move from Warning -> Normal
+const HYSTERESIS_DURATION: Duration = Duration::from_secs(10); // minimal time to wait between transitions
+
+fn decide_routing(
+    id: &str,
+    health_map: &std::collections::HashMap<String, TunnelHealth>,
+) -> RoutingDecision {
+    if let Some(h) = health_map.get(id) {
+        let now = Instant::now();
+        if now.duration_since(h.last_update) > STALE_THRESHOLD {
+            return RoutingDecision::ForceCloud;
+        }
+
+        if matches!(h.status, HealthStatus::Critical) {
+            return RoutingDecision::ForceCloud;
+        }
+
+        if matches!(h.status, HealthStatus::Warning) {
+            return RoutingDecision::HybridSticky;
+        }
+
+        RoutingDecision::RouteLocal
+    } else {
+        RoutingDecision::ForceCloud
+    }
 }
 
 /// Extend your AppState to include a shared hyper client and a request timeout.
@@ -57,6 +115,73 @@ pub struct AppState {
     pub health_data: TunnelHealthMap,
 }
 
+pub type TunnelHealthMap = Arc<RwLock<std::collections::HashMap<String, TunnelHealth>>>;
+
+async fn mark_tunnel_success(state: &AppState, id: &str, latency_ms: Option<f64>) {
+    let mut map = state.health_data.write().await;
+    let entry = map
+        .entry(id.to_string())
+        .or_insert_with(TunnelHealth::default);
+    entry.last_update = Instant::now();
+    entry.last_success = Some(Instant::now());
+    entry.consecutive_successes = entry.consecutive_successes.saturating_add(1);
+    entry.consecutive_failures = 0;
+
+    // update rolling avg latency
+    if let Some(lat) = latency_ms {
+        entry.avg_latency_ms = Some(match entry.avg_latency_ms {
+            Some(prev) => (prev * 0.8) + (lat * 0.2),
+            None => lat,
+        });
+    }
+
+    // decay error rate slowly
+    entry.error_rate = (entry.error_rate * 0.9).max(0.0);
+
+    // bump status towards Normal if thresholds met and hysteresis respected
+    if matches!(entry.status, HealthStatus::Warning)
+        && entry.consecutive_successes >= SUCCESS_TO_NORMAL
+    {
+        let now = Instant::now();
+        if now.duration_since(entry.last_transition) >= HYSTERESIS_DURATION {
+            entry.status = HealthStatus::Normal;
+            entry.last_transition = now;
+        }
+    }
+}
+
+/// Call when a proxied request via tunnel failed (timeout/error)
+async fn mark_tunnel_failure(state: &AppState, id: &str) {
+    let mut map = state.health_data.write().await;
+    let entry = map
+        .entry(id.to_string())
+        .or_insert_with(TunnelHealth::default);
+    entry.last_update = Instant::now();
+    entry.last_failure = Some(Instant::now());
+    entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+    entry.consecutive_successes = 0;
+
+    // increase error rate
+    entry.error_rate = (entry.error_rate * 0.8) + 0.2;
+
+    // escalate to Warning then Critical based on counts/hysteresis
+    let now = Instant::now();
+    if entry.consecutive_failures >= WARNING_TO_CRITICAL_FAILURES {
+        if now.duration_since(entry.last_transition) >= HYSTERESIS_DURATION {
+            entry.status = HealthStatus::Critical;
+            entry.last_transition = now;
+        }
+    } else {
+        // move to Warning if not already Critical
+        if !matches!(entry.status, HealthStatus::Critical)
+            && now.duration_since(entry.last_transition) >= HYSTERESIS_DURATION
+        {
+            entry.status = HealthStatus::Warning;
+            entry.last_transition = now;
+        }
+    }
+}
+
 /// Main handler to be used as the proxy forwarder.
 pub async fn proxy_handler(
     State(state): State<AppState>,
@@ -71,29 +196,108 @@ pub async fn proxy_handler(
         .to_string();
 
     let subdomain = host.split('.').next().unwrap_or_default().to_string();
-    debug!(
+    println!(
         "Incoming request for host={} -> subdomain={}",
         host, subdomain
     );
 
     // --- Sticky Session Logic ---
-    let cookies = axum_req.headers().get(header::COOKIE).and_then(|h| h.to_str().ok()).unwrap_or("");
-    let backend_cookie = cookies.split(';').find(|c| c.trim().starts_with("backend="));
+    let cookies = axum_req
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let backend_cookie = cookies
+        .split(';')
+        .find(|c| c.trim().starts_with("backend="))
+        .map(|s| s.trim().to_string());
+    /*let backend_cookie = cookies
+    .split(';')
+    .find(|c| c.trim().starts_with("backend="));*/
 
-    if let Some(cookie) = backend_cookie {
+    let health_snapshot = {
+        let map = state.health_data.read().await;
+        // debug print trimmed
+        tracing::debug!("health snapshot for routing: {:?}", map.get(&subdomain));
+        map.clone()
+    };
+
+    let routing_decision = decide_routing(&subdomain, &health_snapshot);
+
+    if let Some(cookie) = backend_cookie.clone() {
+        if cookie.contains("cloud") {
+            // If cookie explicitly requests cloud, respect it and keep sticky
+            return forward_to_cloud(axum_req, &state, true).await;
+        } else if cookie.contains("local") {
+            // explicit local cookie: allow local only if not critical
+            if routing_decision == RoutingDecision::ForceCloud
+                || routing_decision == RoutingDecision::RouteCloud
+            {
+                // TODO: fix difference between these 2 enum values.
+                // cookie asks local but health forces cloud -> ignore cookie
+                return forward_to_cloud(axum_req, &state, false).await;
+            } else {
+                // attempt local below
+            }
+        }
+    }
+
+    /*if let Some(cookie) = backend_cookie {
         if cookie.contains("cloud") {
             // Forward to cloud and keep the cookie
             return forward_to_cloud(axum_req, &state, true).await;
         }
         // If backend=local, we continue with the health check logic
+    }*/
+
+    match routing_decision {
+        RoutingDecision::RouteCloud => forward_to_cloud(axum_req, &state, false).await,
+
+        RoutingDecision::RouteLocal => {
+            // attempt local only if tunnel exists
+            if let Some(tunnel_tx) = state.tunnels.read().await.get(&subdomain).cloned() {
+                let mut response =
+                    forward_via_tunnel(&subdomain, axum_req, tunnel_tx, &state).await?;
+                response.headers_mut().insert(
+                    header::SET_COOKIE,
+                    header::HeaderValue::from_static("backend=local; Path=/"),
+                );
+                return Ok(response);
+            }
+            // no tunnel -> fallthrough to cloud
+            forward_to_cloud(axum_req, &state, false).await
+        }
+
+        RoutingDecision::HybridSticky => {
+            // prefer cloud, but if cookie said local and tunnel exists -> allow local
+            if let Some(cookie) = backend_cookie {
+                if cookie.contains("local") {
+                    if let Some(tunnel_tx) = state.tunnels.read().await.get(&subdomain).cloned() {
+                        let mut response =
+                            forward_via_tunnel(&subdomain, axum_req, tunnel_tx, &state).await?;
+                        response.headers_mut().insert(
+                            header::SET_COOKIE,
+                            header::HeaderValue::from_static("backend=local; Path=/"),
+                        );
+                        return Ok(response);
+                    }
+                }
+            }
+            // otherwise go cloud
+            forward_to_cloud(axum_req, &state, false).await
+        }
+
+        RoutingDecision::ForceCloud => forward_to_cloud(axum_req, &state, false).await,
     }
 
     // --- Connection Draining & Health Check Logic ---
-    let is_tunnel_healthy = {
+    /*let is_tunnel_healthy = {
         let health_data = state.health_data.read().await;
+        println!("tunnel health {:?}", health_data);
         if let Some(health) = health_data.get(&subdomain) {
             // Healthy if status is not Critical and last update was within 30 seconds
-            !matches!(health.status, HealthStatus::Critical) && health.last_update.elapsed() < Duration::from_secs(30)
+            !matches!(health.status, HealthStatus::Critical)
+                && health.last_update.elapsed() < Duration::from_secs(30)
         } else {
             true // No health data yet, assume healthy
         }
@@ -105,18 +309,26 @@ pub async fn proxy_handler(
         if let Some(tunnel_tx) = state.tunnels.read().await.get(&subdomain).cloned() {
             // Forward to local and set backend=local cookie
             let mut response = forward_via_tunnel(axum_req, tunnel_tx, &state).await?;
-            response.headers_mut().insert(header::SET_COOKIE, header::HeaderValue::from_static("backend=local; Path=/"));
+            response.headers_mut().insert(
+                header::SET_COOKIE,
+                header::HeaderValue::from_static("backend=local; Path=/"),
+            );
+
+            println!("Sending to local, Response: {:?}", response);
+
             return Ok(response);
         }
     }
 
+    println!(
+        "forwarding to cloud: {}, {}",
+        is_tunnel_healthy, tunnel_exists
+    );
     // If tunnel is not healthy, doesn't exist, or sticky session is for cloud
-    forward_to_cloud(axum_req, &state, false).await
+    forward_to_cloud(axum_req, &state, false).await*/
 }
 
-/// Build ControlMessage::Request and use the oneshot pattern over the tunnel.
-/// Returns an axum::Response on success or StatusCode on failure.
-async fn forward_via_tunnel(
+/*async fn forward_via_tunnel(
     req: AxumRequest<AxumBody>,
     tunnel_tx: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
     state: &AppState,
@@ -198,6 +410,99 @@ async fn forward_via_tunnel(
             Err(StatusCode::GATEWAY_TIMEOUT)
         }
     }
+}*/
+
+async fn forward_via_tunnel(
+    id: &str,
+    req: AxumRequest<AxumBody>,
+    tunnel_tx: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
+    state: &AppState,
+) -> Result<AxumResponse<AxumBody>, StatusCode> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let (resp_tx, resp_rx) = oneshot::channel();
+
+    state
+        .responses
+        .write()
+        .await
+        .insert(request_id.clone(), resp_tx);
+
+    let (parts, body) = req.into_parts();
+    let body_bytes = to_bytes(body, usize::MAX)
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let http_req = HttpRequest {
+        method: parts.method.to_string(),
+        path: parts
+            .uri
+            .path_and_query()
+            .map(|pq| pq.as_str().to_string())
+            .unwrap_or_else(|| "/".to_string()),
+        headers: headers_to_map(&parts.headers),
+        body: body_bytes.to_vec(),
+    };
+
+    let msg = ControlMessage::Request {
+        request_id: request_id.clone(),
+        http: http_req,
+    };
+
+    let msg_str = serde_json::to_string(&msg).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // send request over tunnel
+    if tunnel_tx
+        .send(axum::extract::ws::Message::Text(msg_str.into()))
+        .await
+        .is_err()
+    {
+        state.responses.write().await.remove(&request_id);
+        mark_tunnel_failure(state, id).await;
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+
+    let start = Instant::now();
+    match timeout(state.request_timeout, resp_rx).await {
+        Ok(Ok(http_response)) => {
+            let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+            // success — update health
+            mark_tunnel_success(state, id, Some(latency_ms)).await;
+
+            // build axum response
+            let mut builder = AxumResponse::builder().status(http_response.status);
+            {
+                let headers = builder.headers_mut().unwrap();
+                for (k, v) in http_response.headers {
+                    headers.insert(
+                        header::HeaderName::from_bytes(k.as_bytes())
+                            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                        header::HeaderValue::from_str(&v)
+                            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                    );
+                }
+            }
+
+            let body = AxumBody::from(http_response.body);
+            Ok(builder
+                .body(body)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+        }
+
+        Ok(Err(_)) => {
+            // ws response handler dropped
+            mark_tunnel_failure(state, id).await;
+            state.responses.write().await.remove(&request_id);
+            Err(StatusCode::BAD_GATEWAY)
+        }
+
+        Err(_) => {
+            // timeout
+            mark_tunnel_failure(state, id).await;
+            state.responses.write().await.remove(&request_id);
+            Err(StatusCode::GATEWAY_TIMEOUT)
+        }
+    }
 }
 
 /// Forward to cloud backend using the shared hyper::Client.
@@ -227,8 +532,11 @@ async fn forward_to_cloud(
         state.default_cloud_backend.trim_end_matches('/'),
         path_and_query
     );
+
     let target_uri: hyper::Uri = target.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
-    parts.uri = target_uri; // types are compatible in axum/hyper stack
+    parts.uri = target_uri.clone(); // types are compatible in axum/hyper stack
+
+    println!("url: {:?}", target_uri.clone());
 
     // Rebuild hyper request
     let hyper_req = hyper::Request::from_parts(parts, hyper_body);
@@ -246,17 +554,20 @@ async fn forward_to_cloud(
             let mut axum_resp = AxumResponse::from_parts(parts, AxumBody::from(bytes));
 
             if !is_sticky {
-                axum_resp.headers_mut().insert(header::SET_COOKIE, header::HeaderValue::from_static("backend=cloud; Path=/"));
+                axum_resp.headers_mut().insert(
+                    header::SET_COOKIE,
+                    header::HeaderValue::from_static("backend=cloud; Path=/"),
+                );
             }
-            
+
             Ok(axum_resp)
         }
         Ok(Err(e)) => {
-            tracing::error!("Cloud backend request failed: {}", e);
+            println!("Cloud backend request failed: {}", e);
             Err(StatusCode::BAD_GATEWAY)
         }
         Err(_) => {
-            tracing::warn!("Cloud backend timed out");
+            println!("Cloud backend timed out");
             Err(StatusCode::GATEWAY_TIMEOUT)
         }
     }
@@ -305,7 +616,10 @@ mod tests {
         let hyper_client = HyperClient::builder(TokioExecutor::new()).build(https);
 
         let redis_client = redis::Client::open("redis://127.0.0.1/").unwrap();
-        let redis_conn = redis_client.get_multiplexed_async_connection().await.unwrap();
+        let redis_conn = redis_client
+            .get_multiplexed_async_connection()
+            .await
+            .unwrap();
         let redis_manager = crate::RedisManager { conn: redis_conn };
 
         AppState {
@@ -327,7 +641,11 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 
         // Insert a mock tunnel
-        state.tunnels.write().await.insert(subdomain.to_string(), tx);
+        state
+            .tunnels
+            .write()
+            .await
+            .insert(subdomain.to_string(), tx);
 
         let request = AxumRequest::builder()
             .uri("/")
@@ -396,21 +714,29 @@ mod tests {
                         headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
                         body: b"response body".to_vec(),
                     };
-                    
+
                     // Get the response sender and send the.
-                    let resp_tx = state_clone.responses.write().await.remove(&request_id).unwrap();
+                    let resp_tx = state_clone
+                        .responses
+                        .write()
+                        .await
+                        .remove(&request_id)
+                        .unwrap();
                     resp_tx.send(http_response).unwrap();
                 }
             }
         });
 
-        let result = forward_via_tunnel(request, tx, &state).await;
+        let result = forward_via_tunnel("test", request, tx, &state).await;
 
         assert!(result.is_ok());
         let response = result.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get("Content-Type").unwrap(), "text/plain");
-        
+        assert_eq!(
+            response.headers().get("Content-Type").unwrap(),
+            "text/plain"
+        );
+
         let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body_bytes, "response body");
     }

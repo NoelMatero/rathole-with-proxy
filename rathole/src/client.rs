@@ -4,7 +4,8 @@ use crate::helper::udp_connect;
 use crate::protocol::Hello::{self, *};
 use crate::protocol::{
     self, read_ack, read_control_cmd, read_data_cmd, read_hello, Ack, Auth, ControlChannelCmd,
-    DataChannelCmd, UdpTraffic, CURRENT_PROTO_VERSION, HASH_WIDTH_IN_BYTES,
+    DataChannelCmd, HardwareData, TemperaturesData, UdpTraffic, CURRENT_PROTO_VERSION,
+    HASH_WIDTH_IN_BYTES,
 };
 use crate::transport::{AddrMaybeCached, SocketOpts, TcpTransport, Transport};
 use anyhow::{anyhow, bail, Context, Result};
@@ -473,16 +474,22 @@ impl<T: 'static + Transport> ControlChannel<T> {
         loop {
             tokio::select! {
                 _ = health_interval.tick() => {
-                    let dummy_hardware_data = crate::protocol::HardwareData {
-                        operating_system: "Linux".to_string(),
-                        total_memory: 8 * 1024 * 1024 * 1024, // 8GB
-                        used_memory: 4 * 1024 * 1024 * 1024,  // 4GB
-                        total_swap: 2 * 1024 * 1024 * 1024,   // 2GB
-                        used_swap: 1 * 1024 * 1024 * 1024,    // 1GB
-                        cpu_usage: 0.5, // 50%
-                        avg_temp: 45.0,
-                        max_temp: 60.0,
-                    };
+                let dummy_hardware_data = HardwareData {
+                    operating_system: "Linux".to_string(),
+                    total_memory: 8 * 1024 * 1024 * 1024, // 8GB
+                    used_memory: 4 * 1024 * 1024 * 1024,  // 4GB
+                    total_swap: 2 * 1024 * 1024 * 1024,   // 2GB
+                    used_swap: 1 * 1024 * 1024 * 1024,    // 1GB
+                    cpu_usage: 0.5, // 50%
+                    avg_memory_usage: 50.0,
+                    avg_swap_usage: 50.0,
+                    timestamp: "".to_string(),
+                    temperatures_data: TemperaturesData {
+                        avg_temp: None,
+                        max_temp: None
+                    }
+
+                                    };
 
                     let health_msg = crate::protocol::ControlMessage::HealthUpdate {
                         hardware_data: dummy_hardware_data,

@@ -8,6 +8,7 @@ mod server;
 mod transport;
 
 pub mod error;
+pub mod hardware;
 pub mod multi_map;
 pub mod protocol;
 pub mod proxy;
@@ -144,3 +145,4 @@ pub async fn login(
         Err(AppError::InvalidCredentials)
     }
 }
+

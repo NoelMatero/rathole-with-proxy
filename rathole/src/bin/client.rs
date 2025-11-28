@@ -9,7 +9,7 @@ use hyper::Request;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use rathole::protocol::{ControlMessage, HttpResponse};
+use rathole::protocol::{ControlMessage, HttpResponse, TemperaturesData};
 use serde_json::json;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -130,9 +130,15 @@ async fn main() -> Result<()> {
                     total_swap: 2 * 1024 * 1024 * 1024,   // 2GB
                     used_swap: 1 * 1024 * 1024 * 1024,    // 1GB
                     cpu_usage: 0.5, // 50%
-                    avg_temp: 45.0,
-                    max_temp: 60.0,
-                };
+                    avg_memory_usage: 50.0,
+                    avg_swap_usage: 50.0,
+                    timestamp: "".to_string(),
+                    temperatures_data: TemperaturesData {
+                        avg_temp: None,
+                        max_temp: None
+                    }
+
+                                    };
 
                 let health_msg = ControlMessage::HealthUpdate {
                     hardware_data: dummy_hardware_data,
