@@ -90,13 +90,13 @@ fn decide_routing(
 
         RoutingDecision::RouteLocal
     } else {
-        RoutingDecision::ForceCloud
+        RoutingDecision::RouteLocal
     }
 }
 
 /// Extend your AppState to include a shared hyper client and a request timeout.
 /// You already have tunnels/responses/redis/jwt_secret; add these fields.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AppState {
     pub tunnels: Arc<
         RwLock<
@@ -215,16 +215,23 @@ pub async fn proxy_handler(
     .split(';')
     .find(|c| c.trim().starts_with("backend="));*/
 
+    println!("cookies: {:?}, {:?}", cookies, backend_cookie);
+
     let health_snapshot = {
         let map = state.health_data.read().await;
         // debug print trimmed
-        tracing::debug!("health snapshot for routing: {:?}", map.get(&subdomain));
+        println!("health snapshot for routing: {:?}", map.get(&subdomain));
         map.clone()
     };
 
+    println!("subdomain: {}", subdomain);
+
     let routing_decision = decide_routing(&subdomain, &health_snapshot);
 
+    println!("routing_decision: {:?}", routing_decision);
+
     if let Some(cookie) = backend_cookie.clone() {
+        println!("cookie: {}", cookie);
         if cookie.contains("cloud") {
             // If cookie explicitly requests cloud, respect it and keep sticky
             return forward_to_cloud(axum_req, &state, true).await;
@@ -255,6 +262,11 @@ pub async fn proxy_handler(
 
         RoutingDecision::RouteLocal => {
             // attempt local only if tunnel exists
+            println!(
+                "debug: {:?}",
+                state.tunnels.read().await.get(&"test".to_string()).cloned()
+            );
+            println!("debug2: {:?}", state);
             if let Some(tunnel_tx) = state.tunnels.read().await.get(&subdomain).cloned() {
                 let mut response =
                     forward_via_tunnel(&subdomain, axum_req, tunnel_tx, &state).await?;
@@ -535,8 +547,6 @@ async fn forward_to_cloud(
 
     let target_uri: hyper::Uri = target.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
     parts.uri = target_uri.clone(); // types are compatible in axum/hyper stack
-
-    println!("url: {:?}", target_uri.clone());
 
     // Rebuild hyper request
     let hyper_req = hyper::Request::from_parts(parts, hyper_body);

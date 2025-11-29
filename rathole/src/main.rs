@@ -142,7 +142,7 @@ async fn handle_socket(
                                                                                     entry.status = status.clone();
                                                                                     entry.last_update = Instant::now();
 
-                                                                                println!("Updated health for {} => {:?}", id, health_data.get(&id));
+                                                                                //println!("Updated health for {} => {:?}", id, health_data.get(&id));
                                                                                 },
                                                                                 ControlMessage::Response { request_id, http } => {
                                                                                     if let Some(tx) = state.responses.write().await.remove(&request_id) {
@@ -315,7 +315,7 @@ async fn main() -> Result<(), AppError> {
         default_cloud_backend: server_config
             .default_cloud_backend
             .unwrap_or_else(|| "http://localhost:4000".to_string()),
-        request_timeout: StdDuration::from_secs(1000),
+        request_timeout: StdDuration::from_secs(10),
         health_data: TunnelHealthMap::default(),
     };
 

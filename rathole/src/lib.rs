@@ -30,7 +30,7 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RedisManager {
     pub conn: redis::aio::MultiplexedConnection,
 }
@@ -145,4 +145,3 @@ pub async fn login(
         Err(AppError::InvalidCredentials)
     }
 }
-
