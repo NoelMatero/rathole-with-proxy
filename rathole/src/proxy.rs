@@ -70,6 +70,27 @@ const WARNING_TO_CRITICAL_FAILURES: u32 = 5; // how many consecutive failures pu
 const SUCCESS_TO_NORMAL: u32 = 3; // successes required to move from Warning -> Normal
 const HYSTERESIS_DURATION: Duration = Duration::from_secs(10); // minimal time to wait between transitions
 
+fn get_cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let cookie_hdr = headers.get(header::COOKIE)?.to_str().ok()?;
+    for part in cookie_hdr.split(';') {
+        let part = part.trim();
+        if let Some(val) = part.strip_prefix(&format!("{}=", name)) {
+            return Some(val.to_string());
+        }
+    }
+    None
+}
+
+/// Set tunnel cookie on the response. value should be the tunnel id (e.g. "local-01" or "cloud").
+fn insert_tunnel_cookie(resp: &mut AxumResponse<AxumBody>, value: &str) {
+    // HttpOnly and Path=/; you can extend: Secure, SameSite, Expires etc.
+    let cookie_value = format!("tunnel={}; Path=/; HttpOnly", value);
+    resp.headers_mut().insert(
+        header::SET_COOKIE,
+        header::HeaderValue::from_str(&cookie_value).unwrap(),
+    );
+}
+
 fn decide_routing(
     id: &str,
     health_map: &std::collections::HashMap<String, TunnelHealth>,
