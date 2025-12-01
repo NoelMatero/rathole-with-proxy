@@ -213,17 +213,92 @@ pub async fn proxy_handler(
         .headers()
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
-        .unwrap_or_default()
+        .unwrap_or_default() // TODO: no unwrap
         .to_string();
 
-    let subdomain = host.split('.').next().unwrap_or_default().to_string();
+    let subdomain = host.split('.').next().unwrap_or_default().to_string(); // TODO: no unwrap
     println!(
         "Incoming request for host={} -> subdomain={}",
         host, subdomain
     );
 
+    let preferred_tunnel = get_cookie_value(axum_req.headers(), "tunnel");
+
+    // Snapshot health map
+    let health_snapshot = {
+        let guard = state.health_data.read().await;
+        guard.clone()
+    };
+
+    if let Some(pref_id) = preferred_tunnel.clone() {
+        debug!("preferred tunnel cookie present: {}", pref_id);
+        // check if it exists in registered tunnels and is healthy
+        if let Some(tx) = state.tunnels.read().await.get(&pref_id).cloned() {
+            // Evaluate health for this specific tunnel
+            let healthy = {
+                let guard = state.health_data.read().await;
+                match guard.get(&pref_id) {
+                    Some(h) => {
+                        // healthy if not Critical and not stale
+                        !matches!(h.status, HealthStatus::Critical)
+                            && h.last_update.elapsed() < STALE_THRESHOLD
+                    }
+                    None => true, // unknown => optimistic, allow it
+                }
+            };
+
+            if healthy {
+                // Forward to this exact tunnel (sticky) and keep cookie
+                let mut response = forward_via_tunnel(&pref_id, axum_req, tx, &state).await?;
+                insert_tunnel_cookie(&mut response, &pref_id);
+                return Ok(response);
+            } else {
+                debug!(
+                    "preferred tunnel {} unhealthy or stale, looking for alternative",
+                    pref_id
+                );
+                // Fall through to choose_best_tunnel
+            }
+        } else {
+            debug!("preferred tunnel {} not registered", pref_id);
+        }
+    }
+
+    if let Some((chosen_id, tx)) = choose_best_tunnel(&state, &subdomain).await {
+        // Check health for chosen_id
+        let healthy = {
+            let guard = state.health_data.read().await;
+            match guard.get(&chosen_id) {
+                Some(h) => {
+                    !matches!(h.status, HealthStatus::Critical)
+                        && h.last_update.elapsed() < STALE_THRESHOLD
+                }
+                None => true,
+            }
+        };
+
+        if healthy {
+            let mut response = forward_via_tunnel(&chosen_id, axum_req, tx, &state).await?;
+            // set tunnel cookie so future requests stick to chosen_id
+            insert_tunnel_cookie(&mut response, &chosen_id);
+            return Ok(response);
+        } else {
+            debug!(
+                "chosen tunnel {} unhealthy -> falling back to cloud",
+                chosen_id
+            );
+        }
+    } else {
+        debug!("no local tunnels available for subdomain {}", subdomain);
+    }
+
+    // Fallback: forward to cloud. We set tunnel=cloud to mark sticky to cloud for client.
+    let mut cloud_resp = forward_to_cloud(axum_req, &state, false).await?;
+    insert_tunnel_cookie(&mut cloud_resp, "cloud");
+    Ok(cloud_resp)
+
     // --- Sticky Session Logic ---
-    let cookies = axum_req
+    /*let cookies = axum_req
         .headers()
         .get(header::COOKIE)
         .and_then(|h| h.to_str().ok())
@@ -231,14 +306,12 @@ pub async fn proxy_handler(
     let backend_cookie = cookies
         .split(';')
         .find(|c| c.trim().starts_with("backend="))
-        .map(|s| s.trim().to_string());
+        .map(|s| s.trim().to_string());*/
     /*let backend_cookie = cookies
     .split(';')
     .find(|c| c.trim().starts_with("backend="));*/
 
-    println!("cookies: {:?}, {:?}", cookies, backend_cookie);
-
-    let health_snapshot = {
+    /*let health_snapshot = {
         let map = state.health_data.read().await;
         // debug print trimmed
         println!("health snapshot for routing: {:?}", map.get(&subdomain));
@@ -249,9 +322,9 @@ pub async fn proxy_handler(
 
     let routing_decision = decide_routing(&subdomain, &health_snapshot);
 
-    println!("routing_decision: {:?}", routing_decision);
+    println!("routing_decision: {:?}", routing_decision);*/
 
-    if let Some(cookie) = backend_cookie.clone() {
+    /*if let Some(cookie) = backend_cookie.clone() {
         println!("cookie: {}", cookie);
         if cookie.contains("cloud") {
             // If cookie explicitly requests cloud, respect it and keep sticky
@@ -268,7 +341,7 @@ pub async fn proxy_handler(
                 // attempt local below
             }
         }
-    }
+    }*/
 
     /*if let Some(cookie) = backend_cookie {
         if cookie.contains("cloud") {
@@ -278,7 +351,7 @@ pub async fn proxy_handler(
         // If backend=local, we continue with the health check logic
     }*/
 
-    match routing_decision {
+    /*match routing_decision {
         RoutingDecision::RouteCloud => forward_to_cloud(axum_req, &state, false).await,
 
         RoutingDecision::RouteLocal => {
@@ -321,7 +394,7 @@ pub async fn proxy_handler(
         }
 
         RoutingDecision::ForceCloud => forward_to_cloud(axum_req, &state, false).await,
-    }
+    }*/
 
     // --- Connection Draining & Health Check Logic ---
     /*let is_tunnel_healthy = {
@@ -444,6 +517,83 @@ pub async fn proxy_handler(
         }
     }
 }*/
+
+/// Choose the best tunnel for a logical subdomain.
+///
+/// Selection rules:
+/// 1. Consider tunnels whose key equals the subdomain, or whose key starts with `subdomain-`.
+///    This allows multiple instances like `app-01`, `app-02`.
+/// 2. Prefer non-Critical status, then lower error_rate, then lower avg_latency_ms.
+/// 3. Returns (id, tx) if found.
+async fn choose_best_tunnel(
+    state: &AppState,
+    subdomain: &str,
+) -> Option<(
+    String,
+    tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
+)> {
+    let tunnels_guard = state.tunnels.read().await;
+    let health_guard = state.health_data.read().await;
+
+    // Collect candidate ids that match the subdomain naming convention.
+    let mut candidates: Vec<String> = tunnels_guard
+        .keys()
+        .filter(|k| {
+            // exact match or prefixed instances like "subdomain-" to support multiple instances
+            k.as_str() == subdomain || k.starts_with(&format!("{}-", subdomain))
+        })
+        .cloned()
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Score each candidate based on health and latency/error
+    candidates.sort_by(|a, b| {
+        let ha = health_guard.get(a);
+        let hb = health_guard.get(b);
+
+        // Prefer healthier status: Normal < Warning < Critical
+        let sa = match ha {
+            Some(h) => match h.status {
+                HealthStatus::Normal => 0,
+                HealthStatus::Warning => 1,
+                HealthStatus::Critical => 2,
+            },
+            None => 1, // unknown => treat as Warning-ish
+        };
+        let sb = match hb {
+            Some(h) => match h.status {
+                HealthStatus::Normal => 0,
+                HealthStatus::Warning => 1,
+                HealthStatus::Critical => 2,
+            },
+            None => 1,
+        };
+        sa.cmp(&sb)
+            .then_with(|| {
+                // lower error_rate better
+                let ea = ha.map(|h| h.error_rate).unwrap_or(0.5);
+                let eb = hb.map(|h| h.error_rate).unwrap_or(0.5);
+                ea.partial_cmp(&eb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                // lower latency better
+                let la = ha.and_then(|h| h.avg_latency_ms).unwrap_or(9999.0);
+                let lb = hb.and_then(|h| h.avg_latency_ms).unwrap_or(9999.0);
+                la.partial_cmp(&lb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+
+    // pick first candidate that has a sender
+    for id in candidates {
+        if let Some(tx) = tunnels_guard.get(&id).cloned() {
+            return Some((id, tx));
+        }
+    }
+    None
+}
 
 async fn forward_via_tunnel(
     id: &str,
