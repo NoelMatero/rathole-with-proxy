@@ -208,6 +208,7 @@ pub async fn proxy_handler(
     State(state): State<AppState>,
     axum_req: AxumRequest<AxumBody>,
 ) -> Result<AxumResponse<AxumBody>, StatusCode> {
+    println!("proxy handler");
     // 1) resolve subdomain from Host header
     let host = axum_req
         .headers()
@@ -225,13 +226,8 @@ pub async fn proxy_handler(
     let preferred_tunnel = get_cookie_value(axum_req.headers(), "tunnel");
 
     // Snapshot health map
-    let health_snapshot = {
-        let guard = state.health_data.read().await;
-        guard.clone()
-    };
-
     if let Some(pref_id) = preferred_tunnel.clone() {
-        debug!("preferred tunnel cookie present: {}", pref_id);
+        println!("preferred tunnel cookie present: {}", pref_id);
         // check if it exists in registered tunnels and is healthy
         if let Some(tx) = state.tunnels.read().await.get(&pref_id).cloned() {
             // Evaluate health for this specific tunnel
@@ -253,14 +249,14 @@ pub async fn proxy_handler(
                 insert_tunnel_cookie(&mut response, &pref_id);
                 return Ok(response);
             } else {
-                debug!(
+                println!(
                     "preferred tunnel {} unhealthy or stale, looking for alternative",
                     pref_id
                 );
                 // Fall through to choose_best_tunnel
             }
         } else {
-            debug!("preferred tunnel {} not registered", pref_id);
+            println!("preferred tunnel {} not registered", pref_id);
         }
     }
 
@@ -283,240 +279,21 @@ pub async fn proxy_handler(
             insert_tunnel_cookie(&mut response, &chosen_id);
             return Ok(response);
         } else {
-            debug!(
+            println!(
                 "chosen tunnel {} unhealthy -> falling back to cloud",
                 chosen_id
             );
         }
     } else {
-        debug!("no local tunnels available for subdomain {}", subdomain);
+        println!("no local tunnels available for subdomain {}", subdomain);
     }
 
     // Fallback: forward to cloud. We set tunnel=cloud to mark sticky to cloud for client.
+    println!("fallback happening");
     let mut cloud_resp = forward_to_cloud(axum_req, &state, false).await?;
     insert_tunnel_cookie(&mut cloud_resp, "cloud");
     Ok(cloud_resp)
-
-    // --- Sticky Session Logic ---
-    /*let cookies = axum_req
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    let backend_cookie = cookies
-        .split(';')
-        .find(|c| c.trim().starts_with("backend="))
-        .map(|s| s.trim().to_string());*/
-    /*let backend_cookie = cookies
-    .split(';')
-    .find(|c| c.trim().starts_with("backend="));*/
-
-    /*let health_snapshot = {
-        let map = state.health_data.read().await;
-        // debug print trimmed
-        println!("health snapshot for routing: {:?}", map.get(&subdomain));
-        map.clone()
-    };
-
-    println!("subdomain: {}", subdomain);
-
-    let routing_decision = decide_routing(&subdomain, &health_snapshot);
-
-    println!("routing_decision: {:?}", routing_decision);*/
-
-    /*if let Some(cookie) = backend_cookie.clone() {
-        println!("cookie: {}", cookie);
-        if cookie.contains("cloud") {
-            // If cookie explicitly requests cloud, respect it and keep sticky
-            return forward_to_cloud(axum_req, &state, true).await;
-        } else if cookie.contains("local") {
-            // explicit local cookie: allow local only if not critical
-            if routing_decision == RoutingDecision::ForceCloud
-                || routing_decision == RoutingDecision::RouteCloud
-            {
-                // TODO: fix difference between these 2 enum values.
-                // cookie asks local but health forces cloud -> ignore cookie
-                return forward_to_cloud(axum_req, &state, false).await;
-            } else {
-                // attempt local below
-            }
-        }
-    }*/
-
-    /*if let Some(cookie) = backend_cookie {
-        if cookie.contains("cloud") {
-            // Forward to cloud and keep the cookie
-            return forward_to_cloud(axum_req, &state, true).await;
-        }
-        // If backend=local, we continue with the health check logic
-    }*/
-
-    /*match routing_decision {
-        RoutingDecision::RouteCloud => forward_to_cloud(axum_req, &state, false).await,
-
-        RoutingDecision::RouteLocal => {
-            // attempt local only if tunnel exists
-            println!(
-                "debug: {:?}",
-                state.tunnels.read().await.get(&"test".to_string()).cloned()
-            );
-            println!("debug2: {:?}", state);
-            if let Some(tunnel_tx) = state.tunnels.read().await.get(&subdomain).cloned() {
-                let mut response =
-                    forward_via_tunnel(&subdomain, axum_req, tunnel_tx, &state).await?;
-                response.headers_mut().insert(
-                    header::SET_COOKIE,
-                    header::HeaderValue::from_static("backend=local; Path=/"),
-                );
-                return Ok(response);
-            }
-            // no tunnel -> fallthrough to cloud
-            forward_to_cloud(axum_req, &state, false).await
-        }
-
-        RoutingDecision::HybridSticky => {
-            // prefer cloud, but if cookie said local and tunnel exists -> allow local
-            if let Some(cookie) = backend_cookie {
-                if cookie.contains("local") {
-                    if let Some(tunnel_tx) = state.tunnels.read().await.get(&subdomain).cloned() {
-                        let mut response =
-                            forward_via_tunnel(&subdomain, axum_req, tunnel_tx, &state).await?;
-                        response.headers_mut().insert(
-                            header::SET_COOKIE,
-                            header::HeaderValue::from_static("backend=local; Path=/"),
-                        );
-                        return Ok(response);
-                    }
-                }
-            }
-            // otherwise go cloud
-            forward_to_cloud(axum_req, &state, false).await
-        }
-
-        RoutingDecision::ForceCloud => forward_to_cloud(axum_req, &state, false).await,
-    }*/
-
-    // --- Connection Draining & Health Check Logic ---
-    /*let is_tunnel_healthy = {
-        let health_data = state.health_data.read().await;
-        println!("tunnel health {:?}", health_data);
-        if let Some(health) = health_data.get(&subdomain) {
-            // Healthy if status is not Critical and last update was within 30 seconds
-            !matches!(health.status, HealthStatus::Critical)
-                && health.last_update.elapsed() < Duration::from_secs(30)
-        } else {
-            true // No health data yet, assume healthy
-        }
-    };
-
-    let tunnel_exists = state.tunnels.read().await.get(&subdomain).is_some();
-
-    if is_tunnel_healthy && tunnel_exists {
-        if let Some(tunnel_tx) = state.tunnels.read().await.get(&subdomain).cloned() {
-            // Forward to local and set backend=local cookie
-            let mut response = forward_via_tunnel(axum_req, tunnel_tx, &state).await?;
-            response.headers_mut().insert(
-                header::SET_COOKIE,
-                header::HeaderValue::from_static("backend=local; Path=/"),
-            );
-
-            println!("Sending to local, Response: {:?}", response);
-
-            return Ok(response);
-        }
-    }
-
-    println!(
-        "forwarding to cloud: {}, {}",
-        is_tunnel_healthy, tunnel_exists
-    );
-    // If tunnel is not healthy, doesn't exist, or sticky session is for cloud
-    forward_to_cloud(axum_req, &state, false).await*/
 }
-
-/*async fn forward_via_tunnel(
-    req: AxumRequest<AxumBody>,
-    tunnel_tx: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
-    state: &AppState,
-) -> Result<AxumResponse<AxumBody>, StatusCode> {
-    // Create request id + oneshot pair
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let (resp_tx, resp_rx) = oneshot::channel();
-
-    // register pending response
-    {
-        let mut w = state.responses.write().await;
-        w.insert(request_id.clone(), resp_tx);
-    }
-
-    // Convert Axum request into HttpRequest (protocol struct)
-    let (parts, body) = req.into_parts();
-    let body_bytes = to_bytes(body, usize::MAX)
-        .await
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-    let http_req = HttpRequest {
-        method: parts.method.to_string(),
-        path: parts
-            .uri
-            .path_and_query()
-            .map(|pq| pq.as_str().to_string())
-            .unwrap_or_else(|| "/".to_string()),
-        headers: headers_to_map(&parts.headers),
-        body: body_bytes.to_vec(),
-    };
-
-    let msg = ControlMessage::Request {
-        request_id: request_id.clone(),
-        http: http_req,
-    };
-
-    // send to tunnel (serialize to JSON text)
-    let msg_str = serde_json::to_string(&msg).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if tunnel_tx
-        .send(axum::extract::ws::Message::Text(msg_str.into()))
-        .await
-        .is_err()
-    {
-        // remove pending entry
-        state.responses.write().await.remove(&request_id);
-        return Err(StatusCode::BAD_GATEWAY);
-    }
-
-    // wait for response with configurable timeout
-    match timeout(state.request_timeout, resp_rx).await {
-        Ok(Ok(http_response)) => {
-            // build axum response from HttpResponse
-            let mut builder = AxumResponse::builder().status(http_response.status);
-            {
-                let headers = builder.headers_mut().unwrap();
-                for (k, v) in http_response.headers {
-                    // best-effort header insertion
-                    headers.insert(
-                        header::HeaderName::from_bytes(k.as_bytes())
-                            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-                        header::HeaderValue::from_str(&v)
-                            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-                    );
-                }
-            }
-            let body = AxumBody::from(http_response.body);
-            let response = builder
-                .body(body)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            Ok(response)
-        }
-        Ok(Err(_recv_err)) => {
-            // oneshot canceled
-            state.responses.write().await.remove(&request_id);
-            Err(StatusCode::BAD_GATEWAY)
-        }
-        Err(_) => {
-            // timeout
-            state.responses.write().await.remove(&request_id);
-            Err(StatusCode::GATEWAY_TIMEOUT)
-        }
-    }
-}*/
 
 /// Choose the best tunnel for a logical subdomain.
 ///
@@ -551,6 +328,7 @@ async fn choose_best_tunnel(
 
     // Score each candidate based on health and latency/error
     candidates.sort_by(|a, b| {
+        println!("candidates: a: {}, b: {}", a.clone(), b.clone());
         let ha = health_guard.get(a);
         let hb = health_guard.get(b);
 
@@ -920,5 +698,208 @@ mod tests {
 
         let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body_bytes, "response body");
+    }
+
+    #[tokio::test]
+    async fn test_choose_best_tunnel_logic() {
+        let state = mock_app_state().await;
+        let subdomain = "app";
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+
+        // Insert mock tunnels
+        state
+            .tunnels
+            .write()
+            .await
+            .insert("app-01".to_string(), tx.clone());
+        state
+            .tunnels
+            .write()
+            .await
+            .insert("app-02".to_string(), tx.clone());
+        state
+            .tunnels
+            .write()
+            .await
+            .insert("app-03".to_string(), tx.clone());
+        state
+            .tunnels
+            .write()
+            .await
+            .insert("app-warning".to_string(), tx.clone());
+        state
+            .tunnels
+            .write()
+            .await
+            .insert("other-svc".to_string(), tx.clone());
+
+        // Insert mock health data
+        let mut health_data = state.health_data.write().await;
+
+        // Good: Normal, low latency, low error rate
+        health_data.insert(
+            "app-01".to_string(),
+            TunnelHealth {
+                status: HealthStatus::Normal,
+                avg_latency_ms: Some(50.0),
+                error_rate: 0.1,
+                ..Default::default()
+            },
+        );
+
+        // Bad: Critical status
+        health_data.insert(
+            "app-02".to_string(),
+            TunnelHealth {
+                status: HealthStatus::Critical,
+                ..Default::default()
+            },
+        );
+
+        // OK: Normal, but higher latency and error rate
+        health_data.insert(
+            "app-03".to_string(),
+            TunnelHealth {
+                status: HealthStatus::Normal,
+                avg_latency_ms: Some(200.0),
+                error_rate: 0.2,
+                ..Default::default()
+            },
+        );
+
+        // Warning status
+        health_data.insert(
+            "app-warning".to_string(),
+            TunnelHealth {
+                status: HealthStatus::Warning,
+                avg_latency_ms: Some(100.0),
+                error_rate: 0.5,
+                ..Default::default()
+            },
+        );
+
+        // First choice should be the best "Normal" tunnel
+        let result = choose_best_tunnel(&state, subdomain).await;
+        assert!(result.is_some(), "Should have chosen a tunnel");
+        let (chosen_id, _) = result.unwrap();
+        assert_eq!(
+            chosen_id, "app-01",
+            "Should pick the best Normal tunnel (app-01)"
+        );
+
+        // If the best one becomes unavailable, it should pick the next best "Normal"
+        state.tunnels.write().await.remove("app-01");
+        let result2 = choose_best_tunnel(&state, subdomain).await;
+        assert!(
+            result2.is_some(),
+            "Should have chosen a tunnel after removing the best"
+        );
+        let (chosen_id2, _) = result2.unwrap();
+        assert_eq!(
+            chosen_id2, "app-03",
+            "Should pick the next best Normal tunnel (app-03)"
+        );
+
+        // If all Normal tunnels are gone, it should pick the Warning one
+        state.tunnels.write().await.remove("app-03");
+        let result3 = choose_best_tunnel(&state, subdomain).await;
+        assert!(
+            result3.is_some(),
+            "Should have chosen a tunnel after removing all Normal"
+        );
+        let (chosen_id3, _) = result3.unwrap();
+        assert_eq!(
+            chosen_id3, "app-warning",
+            "Should pick the Warning tunnel as a last resort"
+        );
+
+        // It should NEVER pick the Critical tunnel
+        state.tunnels.write().await.remove("app-warning");
+        let result4 = choose_best_tunnel(&state, subdomain).await;
+        assert!(result4.is_none(), "Should not pick a Critical tunnel");
+    }
+
+    #[tokio::test]
+    async fn test_health_transitions() {
+        let state = mock_app_state().await;
+        let tunnel_id = "test-tunnel";
+
+        // Initial state is Normal (implicitly)
+
+        // A single failure should transition to Warning, assuming hysteresis period has passed
+        tokio::time::sleep(HYSTERESIS_DURATION).await;
+        mark_tunnel_failure(&state, tunnel_id).await;
+        {
+            let health_data = state.health_data.read().await;
+            let health = health_data.get(tunnel_id).unwrap();
+            assert!(
+                matches!(health.status, HealthStatus::Warning),
+                "First failure should trigger Warning status"
+            );
+            assert_eq!(health.consecutive_failures, 1);
+        }
+
+        // Reach critical failure count
+        tokio::time::sleep(HYSTERESIS_DURATION).await;
+        for _ in 1..WARNING_TO_CRITICAL_FAILURES {
+            mark_tunnel_failure(&state, tunnel_id).await;
+        }
+
+        // Status should still be Warning before the final push
+        {
+            let health_data = state.health_data.read().await;
+            let health = health_data.get(tunnel_id).unwrap();
+            assert!(
+                matches!(health.status, HealthStatus::Warning),
+                "Should remain Warning until final failure"
+            );
+            assert_eq!(health.consecutive_failures, WARNING_TO_CRITICAL_FAILURES);
+        }
+
+        // The next failure should transition to Critical
+        tokio::time::sleep(HYSTERESIS_DURATION).await;
+        mark_tunnel_failure(&state, tunnel_id).await;
+        {
+            let health_data = state.health_data.read().await;
+            let health = health_data.get(tunnel_id).unwrap();
+            assert!(
+                matches!(health.status, HealthStatus::Critical),
+                "Exceeding failure threshold should trigger Critical status"
+            );
+        }
+
+        // A single success on a Critical tunnel should NOT change its status (based on current code)
+        tokio::time::sleep(HYSTERESIS_DURATION).await;
+        mark_tunnel_success(&state, tunnel_id, Some(50.0)).await;
+        {
+            let health_data = state.health_data.read().await;
+            let health = health_data.get(tunnel_id).unwrap();
+            assert!(
+                matches!(health.status, HealthStatus::Critical),
+                "A Critical tunnel should not recover to Warning on a single success"
+            );
+        }
+
+        // Manually set back to Warning to test recovery to Normal
+        {
+            let mut health_data = state.health_data.write().await;
+            let health = health_data.get_mut(tunnel_id).unwrap();
+            health.status = HealthStatus::Warning;
+        }
+
+        tokio::time::sleep(HYSTERESIS_DURATION).await;
+        for _ in 0..SUCCESS_TO_NORMAL {
+            mark_tunnel_success(&state, tunnel_id, Some(50.0)).await;
+        }
+        {
+            let health_data = state.health_data.read().await;
+            let health = health_data.get(tunnel_id).unwrap();
+            assert!(
+                matches!(health.status, HealthStatus::Normal),
+                "Should recover to Normal after enough successes"
+            );
+            assert_eq!(health.consecutive_failures, 0);
+            assert_eq!(health.consecutive_successes, SUCCESS_TO_NORMAL);
+        }
     }
 }

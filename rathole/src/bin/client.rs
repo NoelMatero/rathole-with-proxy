@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
 
     let client = reqwest::Client::new();
     let res = client
-        .post("http://127.0.0.1:3000/login")
+        .post("https://572e8a4cddc2.ngrok-free.app/login")
         .json(&json!({
             "username": "test",
             "password": "test"
@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
         .await?;
     let token = res.text().await?;
 
-    let (ws_stream, _) = connect_async("ws://127.0.0.1:3000/register/test").await?;
+    let (ws_stream, _) = connect_async("wss://572e8a4cddc2.ngrok-free.app/register/test").await?;
     println!("Connected to server");
 
     let (mut write, mut read) = ws_stream.split();

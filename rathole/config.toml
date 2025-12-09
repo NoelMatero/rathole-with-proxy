@@ -1,13 +1,27 @@
 [server]
+bind_addr = "0.0.0.0:2333"
+default_token = "123"
+jwt_secret = "your-super-secret-and-long-jwt-secret"
+
+
+[server.services.iperf3-udp]
+type = "udp"
+bind_addr = "0.0.0.0:5202"
+
+[server.services.iperf3-tcp]
+type = "tcp"
+bind_addr = "0.0.0.0:5202"
+
+#[server]
 #   2 # This secret is used to sign and verify the JSON Web Tokens.
 #3 # You can change this to any secret string you want.
-jwt_secret = "your-super-secret-and-long-jwt-secret"
+#jwt_secret = "your-super-secret-and-long-jwt-secret"
 #   5
 #6 # The bind_addr for the main rathole server (not used by the axum server in main.rs)
-bind_addr = "127.0.0.1:3000"
+#bind_addr = "127.0.0.1:3000"
 #8
-[server.services.test]
+#[server.services.test]
 # This defines a service named "test", which the client in src/bin/client.rs
 # is hardcoded to use.
-bind_addr = "127.0.0.1:9000" # The local address this service would forward to (for the legacy server)
-token = "dummy-token"        # Required by the config validation, but not used for JWT auth
+#bind_addr = "127.0.0.1:9000" # The local address this service would forward to (for the legacy server)
+#token = "dummy-token"        # Required by the config validation, but not used for JWT auth
